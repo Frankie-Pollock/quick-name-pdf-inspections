@@ -1,5 +1,5 @@
 // PDF.js setup
-pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.mjs";
 
 // Utility: Remove punctuation
 function cleanText(text) {
