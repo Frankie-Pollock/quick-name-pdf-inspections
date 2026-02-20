@@ -25,32 +25,43 @@ function uniquify(name, existing) {
 }
 
 // =======================================
-// Folder routing logic (NEW)
+// Folder routing logic (UPDATED)
 // =======================================
 function pickFolderByFilename(finalName) {
   const n = (finalName || "").toUpperCase();
 
+  // ----- ASBESTOS rules -----
+  const hasAsbestosWord = n.includes("ASBESTOS");
+  const hasContractorHint = n.includes("LIFE") || n.includes("ASPECT");
+  const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
+
+  if (hasAsbestosWord || hasContractorHint || (hasRemovalOrSurvey && (hasAsbestosWord || hasContractorHint))) {
+    return "ASBESTOS";
+  }
+
+  // ----- Other categories -----
   if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
   if (n.includes("CLEAN")) return "Cleans + Clearouts";
   if (n.includes("EICR")) return "Periodic - Rewires";
-  if (n.includes("ASBESTOS")) return "ASBESTOS";
   if (n.includes("EPC")) return "EPC";
   if (n.includes("ROT WORKS")) return "Rot Works";
-  if (n.includes("RECHARGE")) return "RECHARGEABLE REPAIRS"; // Rechargeable or Recharge
+  if (n.includes("RECHARGE")) return "RECHARGEABLE REPAIRS";
+
+  // MTW/BMD families
   if (n.includes("AC GOLD MTW")) return "MTW";
-  if (n.includes("AC GOLD")) return "MTW"; // unnumbered AC GOLD
+  if (n.includes("AC GOLD")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
 
-  return ""; // root
+  return ""; // default root
 }
 
 // =======================================
 // State
 // =======================================
 let files = [];       // [{zipName, blob, classify:{kind,desc}}]
-let idx = 0;          // current file index
-let mtwN = 0;         // MTW count tracker
-let bmdN = 0;         // BMD count tracker
+let idx = 0;
+let mtwN = 0;
+let bmdN = 0;
 
 // =======================================
 // DOM references
@@ -135,7 +146,7 @@ dropzone.addEventListener("drop", async e => {
 });
 
 // =======================================
-// Classification UI helpers
+// Classification UI
 // =======================================
 function getSelectedKind() {
   const r = $$("input[name='kind']").find(x => x.checked);
@@ -168,7 +179,7 @@ function requireInputsOrError() {
 }
 
 // =======================================
-// File navigation + preview
+// Navigation + preview
 // =======================================
 async function showCurrent() {
   errBox.classList.add("hidden");
@@ -192,7 +203,7 @@ async function showCurrent() {
 }
 
 // =======================================
-// SHARP PREVIEW (no blur, no degradation)
+// Crisp preview
 // =======================================
 async function renderPreview(blob) {
   try {
@@ -201,7 +212,6 @@ async function renderPreview(blob) {
     const page = await pdf.getPage(1);
 
     const desiredWidth = 420;
-
     const initialViewport = page.getViewport({ scale: 1 });
     const scale = desiredWidth / initialViewport.width;
     const viewport = page.getViewport({ scale });
@@ -212,25 +222,12 @@ async function renderPreview(blob) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    await page.render({
-      canvasContext: ctx,
-      viewport
-    }).promise;
+    await page.render({ canvasContext: ctx, viewport }).promise;
   } catch (e) {
     console.warn("Preview failed; blank canvas shown.", e);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 }
-
-// =======================================
-// Event: radio button changed
-// =======================================
-$$("input[name='kind']").forEach(r => {
-  r.addEventListener("change", () => {
-    const k = getSelectedKind();
-    descWrap.classList.toggle("hidden", k !== "WORK_ORDER");
-  });
-});
 
 // =======================================
 // Navigation buttons
@@ -255,7 +252,7 @@ finishBtn.addEventListener("click", async () => {
 });
 
 // =======================================
-// Save the classification
+// Save classification
 // =======================================
 function saveChoice() {
   const k = getSelectedKind();
@@ -274,7 +271,7 @@ function saveChoice() {
 }
 
 // =======================================
-// Build final ZIP (WITH FOLDERING)
+// ZIP generation (WITH FOLDERS)
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
