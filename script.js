@@ -309,7 +309,7 @@ async function buildAndDownload() {
           newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
           break;
         case "WORK_ORDER":
-          newName = `${address} - VOID ${cleanPunc(c.desc)} REQUEST.pdf`;
+          newName = `${address} - VOID ${cleanPunc(c.desc)} WORK ORDER REQUEST.pdf`;
           break;
       }
     }
