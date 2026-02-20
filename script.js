@@ -8,7 +8,6 @@ const toUpper = s => (s || "").toUpperCase();
 const cleanPunc = s =>
   toUpper(s).replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
 
-// Unique filename helper
 function uniquify(name, existing) {
   if (!existing.has(name)) {
     existing.add(name);
@@ -49,13 +48,13 @@ function pickFolderByFilename(finalName) {
   if (n.includes("AC GOLD")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
 
-  return ""; // ZIP root
+  return ""; // default → ZIP root
 }
 
 // =======================================
 // State
 // =======================================
-let files = []; // [{zipName, blob, classify:{kind, desc}}]
+let files = [];
 let idx = 0;
 let mtwN = 0;
 let bmdN = 0;
@@ -103,7 +102,7 @@ dropzone.addEventListener("drop", async e => {
 
   const file = e.dataTransfer.files[0];
   if (!file || !file.name.toLowerCase().endsWith(".zip")) {
-    alert("Please drop a ZIP file.");
+    alert("Please drop a .zip file.");
     return;
   }
 
@@ -154,31 +153,11 @@ function setSelectedKind(kind) {
   $$("input[name='kind']").forEach(x => x.checked = (x.value === kind));
 }
 
-function requireInputsOrError() {
-  errBox.classList.add("hidden");
-  const k = getSelectedKind();
-
-  if (!k) {
-    errBox.textContent = "Please choose a type.";
-    errBox.classList.remove("hidden");
-    return false;
-  }
-
-  if (k === "WORK_ORDER") {
-    const d = cleanPunc(descIn.value);
-    if (!d) {
-      errBox.textContent = "Please enter the Work Order description.";
-      errBox.classList.remove("hidden");
-      return false;
-    }
-  }
-  return true;
-}
-
 async function showCurrent() {
   errBox.classList.add("hidden");
 
   idxSpan.textContent = String(idx + 1);
+
   prevBtn.classList.toggle("muted", idx === 0);
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
   finishBtn.classList.toggle("hidden", idx < files.length - 1);
@@ -187,7 +166,8 @@ async function showCurrent() {
 
   setSelectedKind(current?.kind || null);
 
-  descWrap.classList.toggle("hidden", (current?.kind || "") !== "WORK_ORDER");
+  // SHOW WORK ORDER FIELD PROPERLY
+  descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
 
   fileLabel.textContent = files[idx].zipName;
@@ -235,17 +215,42 @@ prevBtn.addEventListener("click", async () => {
 });
 
 nextBtn.addEventListener("click", async () => {
-  if (!requireInputsOrError()) return;
+  if (!validateCurrent()) return;
   saveChoice();
   idx++;
   await showCurrent();
 });
 
 finishBtn.addEventListener("click", async () => {
-  if (!requireInputsOrError()) return;
+  if (!validateCurrent()) return;
   saveChoice();
   await buildAndDownload();
 });
+
+// =======================================
+// Validation (ONLY when pressing Next/Finish)
+// =======================================
+function validateCurrent() {
+  errBox.classList.add("hidden");
+
+  const k = getSelectedKind();
+  if (!k) {
+    errBox.textContent = "Please choose a type.";
+    errBox.classList.remove("hidden");
+    return false;
+  }
+
+  if (k === "WORK_ORDER") {
+    const d = cleanPunc(descIn.value);
+    if (!d) {
+      errBox.textContent = "Please enter the Work Order description.";
+      errBox.classList.remove("hidden");
+      return false;
+    }
+  }
+
+  return true;
+}
 
 // =======================================
 // Save classification
@@ -266,7 +271,7 @@ function saveChoice() {
 }
 
 // =======================================
-// ZIP WITH FOLDER LOGIC + SKIPPED FILE FIX
+// ZIP generation (WITH FOLDERS + SKIPPED FILE FIX)
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
@@ -286,7 +291,7 @@ async function buildAndDownload() {
     let newName = "";
 
     if (!c || c.kind === "SKIP") {
-      newName = `${address} - VOID.pdf`;
+      newName = `${address} - VOID.pdf`;   // KEEP skipped files
     } else {
       switch (c.kind) {
         case "CHECKLIST":
