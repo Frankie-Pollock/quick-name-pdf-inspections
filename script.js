@@ -43,7 +43,7 @@ function pickFolderByFilename(finalName) {
   if (n.includes("EICR")) return "Periodic - Rewires";
   if (n.includes("EPC")) return "EPC";
   if (n.includes("ROT WORKS")) return "Rot Works";
-  if (n.includes("RECHARGE")) return "RECHARGEABLE REPAIRS";
+  if (n.includes("RECHARGE")) return "Rechargeable Repairs";
   if (n.includes("AC GOLD MTW")) return "MTW";
   if (n.includes("AC GOLD")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
