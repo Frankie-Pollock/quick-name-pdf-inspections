@@ -3,44 +3,45 @@
 <head>
   <meta charset="UTF-8" />
   <title>VOID PDF Renamer</title>
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; }
+    body { font-family: Arial; margin: 40px; }
     .dropzone {
       border: 3px dashed #777;
       padding: 40px;
       text-align: center;
-      color: #444;
       margin-top: 20px;
       border-radius: 10px;
       cursor: pointer;
     }
-    .hint { color:#666; font-size: 0.9rem; }
-    input[type="text"] { width: 480px; max-width: 100%; padding: 10px; font-size: 16px; }
   </style>
 </head>
 <body>
-  <h2>VOID PDF Renamer Tool</h2>
 
-  <label for="address">ENTER ADDRESS (exactly as the folder name):</label><br/>
-  <input id="address" type="text" placeholder="e.g. 12 EXAMPLE STREET" /><br/><br/>
+<h2>VOID PDF Renamer Tool</h2>
 
-  <div id="dropzone" class="dropzone">
-    Drag your ZIP file here
-    <div class="hint">The tool will unzip → read PDFs → rename → download a new ZIP.</div>
-  </div>
+<label>Enter Address:</label><br>
+<input id="address" type="text" style="width:400px; padding:10px;"><br><br>
 
-  <!-- 1) PDF.js main library (defines window.pdfjsLib) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.6.347/pdf.js" integrity="sha512-5V1r5KqrzsQp2m8iN1XH2y3tPdGQH1m9w0LkQeV6tQ2K1y9f1YpHq8RrQePnKQFJ2j7X2N4b2m2C0QHf6s0e9A==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<div id="dropzone" class="dropzone">
+  Drag ZIP file here
+</div>
 
-  <!-- 2) PDF.js worker (local file you saved) -->
-  <script src="pdf.worker.min.js"></script>
+<!-- Load PDF.js as an ES MODULE -->
+<script type="module">
+  import * as pdfjsLib from './pdf.mjs';
 
-  <!-- 3) JSZip (defines window.JSZip) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js" integrity="sha512-gR6VbH2cQk3QyW9wN+3c3uGR0d8K5Ff8QkNlYw8e1nT9aCwQd9oC5Cw2v8zJqz2wD4m6v7sP9Z2m8zjv5JYQBw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  // Expose to window so script.js can use it
+  window.pdfjsLib = pdfjsLib;
 
-  <!-- 4) Your app logic (must be last) -->
-  <script src="script.js"></script>
+  // Set worker for module build
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
+</script>
+
+<!-- Load JSZip (UMD build – normal script tag is fine) -->
+jszip.min.js</script>
+
+<!-- Finally load your renamer logic -->
+script.js</script>
+
 </body>
 </html>
