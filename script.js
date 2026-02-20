@@ -1,5 +1,3 @@
-// PDF.js setup
-pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.mjs";
 // Utility: Remove punctuation
 function cleanText(text) {
     return text.replace(/[^\w\s]/gi, "").replace(/\s+/g, " ").trim();
