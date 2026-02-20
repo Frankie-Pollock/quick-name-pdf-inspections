@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <title>VOID PDF Renamer</title>
   <style>
-    body { font-family: Arial; margin: 40px; }
+    body { font-family: Arial; margin: 40px; background:#111; color:white; }
     .dropzone {
       border: 3px dashed #777;
       padding: 40px;
@@ -26,22 +26,22 @@
   Drag ZIP file here
 </div>
 
-<!-- Load PDF.js as an ES MODULE -->
+<!-- Load PDF.js ES Module -->
 <script type="module">
   import * as pdfjsLib from './pdf.mjs';
 
-  // Expose to window so script.js can use it
+  // make available to script.js
   window.pdfjsLib = pdfjsLib;
 
-  // Set worker for module build
+  // set worker
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
 </script>
 
-<!-- Load JSZip (UMD build – normal script tag is fine) -->
-jszip.min.js</script>
+<!-- Load JSZip -->
+<script src="./jszip.min.js"></script>
 
-<!-- Finally load your renamer logic -->
-script.js</script>
+<!-- Your renamer script -->
+<script src="./script.js"></script>
 
 </body>
 </html>
