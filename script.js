@@ -79,7 +79,7 @@ const nextBtn = $("#nextBtn");
 const finishBtn = $("#finishBtn");
 
 // =======================================
-// Drag & Drop
+// Drag & Drop (UPDATED TO SUPPORT ZIP OR MULTIPLE PDFs)
 // =======================================
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
@@ -100,45 +100,67 @@ dropzone.addEventListener("drop", async e => {
     return;
   }
 
-  const file = e.dataTransfer.files[0];
-  if (!file || !file.name.toLowerCase().endsWith(".zip")) {
-    alert("Please drop a .zip file.");
+  const droppedFiles = Array.from(e.dataTransfer.files);
+  if (!droppedFiles.length) {
+    alert("No files dropped.");
     return;
   }
 
-  try {
-    const zip = await JSZip.loadAsync(file);
-    files = [];
-    mtwN = 0;
-    bmdN = 0;
+  files = [];
+  mtwN = 0;
+  bmdN = 0;
 
-    const entries = Object.values(zip.files).filter(
-      f => !f.dir && f.name.toLowerCase().endsWith(".pdf")
-    );
+  // CASE 1 — ZIP FILE
+  if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
+    try {
+      const zip = await JSZip.loadAsync(droppedFiles[0]);
+      const entries = Object.values(zip.files).filter(
+        f => !f.dir && f.name.toLowerCase().endsWith(".pdf")
+      );
 
-    if (!entries.length) {
-      alert("No PDF files found in the ZIP.");
+      if (!entries.length) {
+        alert("No PDF files found in the ZIP.");
+        return;
+      }
+
+      for (const entry of entries) {
+        const blob = await zip.file(entry.name).async("blob");
+        files.push({ zipName: entry.name, blob, classify: null });
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to read ZIP.");
       return;
     }
-
-    for (const entry of entries) {
-      const blob = await zip.file(entry.name).async("blob");
-      files.push({ zipName: entry.name, blob, classify: null });
-    }
-
-    idx = 0;
-    wizard.classList.remove("hidden");
-    dropzone.classList.add("hidden");
-
-    totSpan.textContent = files.length;
-    mtwSpan.textContent = "0";
-    bmdSpan.textContent = "0";
-
-    showCurrent();
-  } catch (err) {
-    console.error(err);
-    alert("Failed to read the ZIP.");
   }
+
+  // CASE 2 — MULTIPLE PDFs OR A SINGLE PDF
+  else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
+    for (const f of droppedFiles) {
+      files.push({
+        zipName: f.name,
+        blob: f,
+        classify: null
+      });
+    }
+  }
+
+  // CASE 3 — MIXED FILES
+  else {
+    alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs (only PDFs)");
+    return;
+  }
+
+  // Start wizard
+  idx = 0;
+  wizard.classList.remove("hidden");
+  dropzone.classList.add("hidden");
+
+  totSpan.textContent = files.length;
+  mtwSpan.textContent = "0";
+  bmdSpan.textContent = "0";
+
+  showCurrent();
 });
 
 // =======================================
@@ -160,13 +182,13 @@ async function showCurrent() {
 
   prevBtn.classList.toggle("muted", idx === 0);
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
-  finishBtn.classList.toggle("hidden", idx < files.length - 1);
+  finishBtn.classList.toggle("hidden", idx < files.Length - 1);
 
   const current = files[idx].classify;
 
   setSelectedKind(current?.kind || null);
 
-  // SHOW WORK ORDER FIELD PROPERLY
+  // Ensure Work Order field is shown correctly
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
 
@@ -228,7 +250,7 @@ finishBtn.addEventListener("click", async () => {
 });
 
 // =======================================
-// Validation (ONLY when pressing Next/Finish)
+// Validation
 // =======================================
 function validateCurrent() {
   errBox.classList.add("hidden");
@@ -291,7 +313,7 @@ async function buildAndDownload() {
     let newName = "";
 
     if (!c || c.kind === "SKIP") {
-      newName = `${address} - VOID.pdf`;   // KEEP skipped files
+      newName = `${address} - VOID.pdf`;
     } else {
       switch (c.kind) {
         case "CHECKLIST":
@@ -302,7 +324,7 @@ async function buildAndDownload() {
           newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
           break;
         case "RECHARGE":
-          newName = `${address} - VOID RECHARGEABLE WORKS.pdf`;
+          newName = `${address} - VOID_RECHARGEABLE_Works.pdf`;
           break;
         case "BMD":
           bmdCount++;
