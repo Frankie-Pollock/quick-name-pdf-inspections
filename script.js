@@ -25,6 +25,26 @@ function uniquify(name, existing) {
 }
 
 // =======================================
+// Folder routing logic (NEW)
+// =======================================
+function pickFolderByFilename(finalName) {
+  const n = (finalName || "").toUpperCase();
+
+  if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
+  if (n.includes("CLEAN")) return "Cleans + Clearouts";
+  if (n.includes("EICR")) return "Periodic - Rewires";
+  if (n.includes("ASBESTOS")) return "ASBESTOS";
+  if (n.includes("EPC")) return "EPC";
+  if (n.includes("ROT WORKS")) return "Rot Works";
+  if (n.includes("RECHARGE")) return "RECHARGEABLE REPAIRS"; // Rechargeable or Recharge
+  if (n.includes("AC GOLD MTW")) return "MTW";
+  if (n.includes("AC GOLD")) return "MTW"; // unnumbered AC GOLD
+  if (n.includes("BMD WORKS")) return "NEC Lines";
+
+  return ""; // root
+}
+
+// =======================================
 // State
 // =======================================
 let files = [];       // [{zipName, blob, classify:{kind,desc}}]
@@ -254,12 +274,17 @@ function saveChoice() {
 }
 
 // =======================================
-// Build final renamed ZIP
+// Build final ZIP (WITH FOLDERING)
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
-  const out = new JSZip();
-  const seen = new Set();
+  const zip = new JSZip();
+
+  const seenByFolder = new Map();
+  const getSeen = folder => {
+    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+    return seenByFolder.get(folder);
+  };
 
   let mtwCount = 0;
   let bmdCount = 0;
@@ -294,11 +319,15 @@ async function buildAndDownload() {
         break;
     }
 
-    newName = uniquify(newName, seen);
-    out.file(newName, item.blob);
+    const folder = pickFolderByFilename(newName);
+    const seen = getSeen(folder);
+    const finalName = uniquify(newName, seen);
+
+    const target = folder ? zip.folder(folder) : zip;
+    target.file(finalName, item.blob);
   }
 
-  const blob = await out.generateAsync({ type: "blob" });
+  const blob = await zip.generateAsync({ type: "blob" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `${address} - VOID RENAMED.zip`;
