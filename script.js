@@ -25,40 +25,37 @@ function uniquify(name, existing) {
 }
 
 // =======================================
-// Folder routing logic (UPDATED)
+// FOLDER ROUTING LOGIC
 // =======================================
 function pickFolderByFilename(finalName) {
   const n = (finalName || "").toUpperCase();
 
-  // ----- ASBESTOS rules -----
-  const hasAsbestosWord = n.includes("ASBESTOS");
-  const hasContractorHint = n.includes("LIFE") || n.includes("ASPECT");
+  // ASBESTOS group
+  const hasAsbestos = n.includes("ASBESTOS");
+  const hasContractor = n.includes("LIFE") || n.includes("ASPECT");
   const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
 
-  if (hasAsbestosWord || hasContractorHint || (hasRemovalOrSurvey && (hasAsbestosWord || hasContractorHint))) {
+  if (hasAsbestos || hasContractor || (hasRemovalOrSurvey && (hasAsbestos || hasContractor))) {
     return "ASBESTOS";
   }
 
-  // ----- Other categories -----
   if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
   if (n.includes("CLEAN")) return "Cleans + Clearouts";
   if (n.includes("EICR")) return "Periodic - Rewires";
   if (n.includes("EPC")) return "EPC";
   if (n.includes("ROT WORKS")) return "Rot Works";
   if (n.includes("RECHARGE")) return "RECHARGEABLE REPAIRS";
-
-  // MTW/BMD families
   if (n.includes("AC GOLD MTW")) return "MTW";
   if (n.includes("AC GOLD")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
 
-  return ""; // default root
+  return ""; // ZIP root
 }
 
 // =======================================
 // State
 // =======================================
-let files = [];       // [{zipName, blob, classify:{kind,desc}}]
+let files = []; // [{zipName, blob, classify:{kind, desc}}]
 let idx = 0;
 let mtwN = 0;
 let bmdN = 0;
@@ -106,7 +103,7 @@ dropzone.addEventListener("drop", async e => {
 
   const file = e.dataTransfer.files[0];
   if (!file || !file.name.toLowerCase().endsWith(".zip")) {
-    alert("Please drop a .zip file.");
+    alert("Please drop a ZIP file.");
     return;
   }
 
@@ -141,12 +138,12 @@ dropzone.addEventListener("drop", async e => {
     showCurrent();
   } catch (err) {
     console.error(err);
-    alert("Failed to read the ZIP. Re‑zip the files and try again.");
+    alert("Failed to read the ZIP.");
   }
 });
 
 // =======================================
-// Classification UI
+// UI + Preview
 // =======================================
 function getSelectedKind() {
   const r = $$("input[name='kind']").find(x => x.checked);
@@ -154,7 +151,7 @@ function getSelectedKind() {
 }
 
 function setSelectedKind(kind) {
-  $$("input[name='kind']").forEach(x => (x.checked = x.value === kind));
+  $$("input[name='kind']").forEach(x => x.checked = (x.value === kind));
 }
 
 function requireInputsOrError() {
@@ -178,33 +175,26 @@ function requireInputsOrError() {
   return true;
 }
 
-// =======================================
-// Navigation + preview
-// =======================================
 async function showCurrent() {
   errBox.classList.add("hidden");
 
   idxSpan.textContent = String(idx + 1);
-
   prevBtn.classList.toggle("muted", idx === 0);
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
   finishBtn.classList.toggle("hidden", idx < files.length - 1);
 
-  setSelectedKind(files[idx].classify?.kind || null);
-  descWrap.classList.toggle(
-    "hidden",
-    (files[idx].classify?.kind || "") !== "WORK_ORDER"
-  );
-  descIn.value = files[idx].classify?.desc || "";
+  const current = files[idx].classify;
+
+  setSelectedKind(current?.kind || null);
+
+  descWrap.classList.toggle("hidden", (current?.kind || "") !== "WORK_ORDER");
+  descIn.value = current?.desc || "";
 
   fileLabel.textContent = files[idx].zipName;
 
   await renderPreview(files[idx].blob);
 }
 
-// =======================================
-// Crisp preview
-// =======================================
 async function renderPreview(blob) {
   try {
     const buf = await blob.arrayBuffer();
@@ -219,18 +209,24 @@ async function renderPreview(blob) {
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
 
     await page.render({ canvasContext: ctx, viewport }).promise;
-  } catch (e) {
-    console.warn("Preview failed; blank canvas shown.", e);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  } catch (err) {
+    console.warn("Preview failed", err);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
   }
 }
 
+$$("input[name='kind']").forEach(r =>
+  r.addEventListener("change", () => {
+    descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
+  })
+);
+
 // =======================================
-// Navigation buttons
+// Navigation
 // =======================================
 prevBtn.addEventListener("click", async () => {
   if (idx === 0) return;
@@ -257,7 +253,6 @@ finishBtn.addEventListener("click", async () => {
 function saveChoice() {
   const k = getSelectedKind();
   const d = k === "WORK_ORDER" ? cleanPunc(descIn.value) : "";
-
   files[idx].classify = { kind: k, desc: d };
 
   if (k === "MTW") {
@@ -271,14 +266,14 @@ function saveChoice() {
 }
 
 // =======================================
-// ZIP generation (WITH FOLDERS)
+// ZIP WITH FOLDER LOGIC + SKIPPED FILE FIX
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
   const zip = new JSZip();
 
   const seenByFolder = new Map();
-  const getSeen = folder => {
+  const seenSet = folder => {
     if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
     return seenByFolder.get(folder);
   };
@@ -288,37 +283,35 @@ async function buildAndDownload() {
 
   for (const item of files) {
     const c = item.classify;
-    if (!c || c.kind === "SKIP") continue;
-
     let newName = "";
 
-    switch (c.kind) {
-      case "CHECKLIST":
-        newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
-        break;
-
-      case "MTW":
-        mtwCount++;
-        newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
-        break;
-
-      case "RECHARGE":
-        newName = `${address} - VOID RECHARGEABLE WORKS.pdf`;
-        break;
-
-      case "BMD":
-        bmdCount++;
-        newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
-        break;
-
-      case "WORK_ORDER":
-        newName = `${address} - VOID ${cleanPunc(c.desc)} REQUEST.pdf`;
-        break;
+    if (!c || c.kind === "SKIP") {
+      newName = `${address} - VOID.pdf`;
+    } else {
+      switch (c.kind) {
+        case "CHECKLIST":
+          newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
+          break;
+        case "MTW":
+          mtwCount++;
+          newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
+          break;
+        case "RECHARGE":
+          newName = `${address} - VOID RECHARGEABLE WORKS.pdf`;
+          break;
+        case "BMD":
+          bmdCount++;
+          newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
+          break;
+        case "WORK_ORDER":
+          newName = `${address} - VOID ${cleanPunc(c.desc)} REQUEST.pdf`;
+          break;
+      }
     }
 
     const folder = pickFolderByFilename(newName);
-    const seen = getSeen(folder);
-    const finalName = uniquify(newName, seen);
+    const set = seenSet(folder);
+    const finalName = uniquify(newName, set);
 
     const target = folder ? zip.folder(folder) : zip;
     target.file(finalName, item.blob);
