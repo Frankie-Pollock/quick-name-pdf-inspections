@@ -35,7 +35,7 @@ function pickFolderByFilename(finalName) {
   const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
 
   if (hasAsbestos || hasContractor || (hasRemovalOrSurvey && (hasAsbestos || hasContractor))) {
-    return "ASBESTOS";
+    return "Asbestos";
   }
 
   if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
