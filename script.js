@@ -1,15 +1,19 @@
-
 // =======================================
 // FAST WORKFLOW: Fixed-crop OCR only for Work Orders
 // =======================================
 
 // ---- Crop settings (percentages of page) ----
 // These values target the cell under "DESCRIPTION OF WORKS REQUIRED"
-// Adjust if your scans differ slightly.
-const CROP_TOP_PCT = 0.28;    // 28% down from page top
+const CROP_TOP_PCT = 0.28;    // 28% down from page top  (Work Order description cell)
 const CROP_BOTTOM_PCT = 0.45; // 45% down from page top
 const CROP_LEFT_PCT = 0.05;   // 5% from left edge
 const CROP_RIGHT_PCT = 0.95;  // 95% (i.e., 5% from right edge)
+
+// New: fixed crop for CONTRACTOR/SUPPLIER row (just above the description cell)
+const CONTRACTOR_TOP_PCT = 0.22;     // tune if your scans differ
+const CONTRACTOR_BOTTOM_PCT = 0.28;  // sits immediately above the description band
+const CONTRACTOR_LEFT_PCT = CROP_LEFT_PCT;
+const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
 
 // =======================================
 // Utility helpers
@@ -41,10 +45,49 @@ function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
+// Simple Levenshtein distance (for fuzzy matching OCR variations)
+function levenshtein(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function tokenize(str) {
+  return cleanPunc(str).split(/\s+/).filter(Boolean);
+}
+
+// Fuzzy phrase search: checks sliding windows of tokens
+function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
+  const hayTokens = tokenize(haystack);
+  const phraseTokens = tokenize(phrase);
+  if (!hayTokens.length || !phraseTokens.length) return false;
+
+  const windowSize = phraseTokens.length;
+  const target = phraseTokens.join(" ");
+  for (let i = 0; i <= hayTokens.length - windowSize; i++) {
+    const window = hayTokens.slice(i, i + windowSize).join(" ");
+    if (levenshtein(window, target) <= maxDist) return true;
+  }
+  return false;
+}
+
 // =======================================
 // State
 // =======================================
-let files = [];      // [{ zipName, blob, classify?:{kind,desc}, woExtracted?:string }]
+let files = [];      // [{ zipName, blob, classify?:{kind,desc}, woExtracted?:string, contractorExtracted?:string }]
 let idx = 0;
 let mtwN = 0;
 let bmdN = 0;
@@ -89,14 +132,14 @@ async function renderPdfPageToCanvas(blob, pageNum = 1, scale = 2.2) {
   return c;
 }
 
-function cropFixedRegion(pageCanvas) {
+function cropRegion(pageCanvas, leftPct, rightPct, topPct, bottomPct) {
   const W = pageCanvas.width;
   const H = pageCanvas.height;
 
-  const x0 = Math.round(W * CROP_LEFT_PCT);
-  const x1 = Math.round(W * CROP_RIGHT_PCT);
-  const y0 = Math.round(H * CROP_TOP_PCT);
-  const y1 = Math.round(H * CROP_BOTTOM_PCT);
+  const x0 = Math.round(W * leftPct);
+  const x1 = Math.round(W * rightPct);
+  const y0 = Math.round(H * topPct);
+  const y1 = Math.round(H * bottomPct);
 
   const w = Math.max(10, x1 - x0);
   const h = Math.max(10, y1 - y0);
@@ -107,6 +150,14 @@ function cropFixedRegion(pageCanvas) {
   const oc = out.getContext("2d");
   oc.drawImage(pageCanvas, x0, y0, w, h, 0, 0, w, h);
   return out;
+}
+
+function cropFixedDescRegion(pageCanvas) {
+  return cropRegion(pageCanvas, CROP_LEFT_PCT, CROP_RIGHT_PCT, CROP_TOP_PCT, CROP_BOTTOM_PCT);
+}
+
+function cropFixedContractorRegion(pageCanvas) {
+  return cropRegion(pageCanvas, CONTRACTOR_LEFT_PCT, CONTRACTOR_RIGHT_PCT, CONTRACTOR_TOP_PCT, CONTRACTOR_BOTTOM_PCT);
 }
 
 // Simple enhancement: grayscale + auto-levels + soft threshold push
@@ -167,7 +218,7 @@ async function ocrCroppedSingleLine(cropCanvas) {
   let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (lines.length) return cleanPunc(lines[0]);
 
-  // Fallback pass: block of text (just in case)
+  // Fallback: treat as a small block
   const res2 = await Tesseract.recognize(enhanced, "eng", {
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
     tessedit_pageseg_mode: 6 // uniform block
@@ -177,19 +228,40 @@ async function ocrCroppedSingleLine(cropCanvas) {
   return lines.length ? cleanPunc(lines[0]) : "";
 }
 
+// OCR of contractor region → take the most confident line (cleaned)
+async function ocrCroppedContractor(cropCanvas) {
+  const enhanced = enhanceForOcr(cropCanvas);
+  const res = await Tesseract.recognize(enhanced, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+    tessedit_pageseg_mode: 6
+  });
+  const text = cleanPunc(res?.data?.text || "");
+  return text;
+}
+
 // ---- Pipeline run when Work Order is selected
 async function ensureWorkOrderExtracted(fileItem) {
-  if (fileItem.woExtracted != null) return fileItem.woExtracted;
+  if (fileItem.woExtracted != null && fileItem.contractorExtracted != null) {
+    return fileItem.woExtracted;
+  }
 
   ocrDot.className = "dot busy";
   ocrStatus.textContent = "Scanning…";
 
   try {
     const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
-    const crop = cropFixedRegion(pageCanvas);
-    const desc = await ocrCroppedSingleLine(crop);
 
-    fileItem.woExtracted = desc || ""; // cache even if empty
+    // Description crop
+    const descCrop = cropFixedDescRegion(pageCanvas);
+    const desc = await ocrCroppedSingleLine(descCrop);
+
+    // Contractor crop (row above)
+    const contractorCrop = cropFixedContractorRegion(pageCanvas);
+    const contractor = await ocrCroppedContractor(contractorCrop);
+
+    fileItem.woExtracted = desc || "";
+    fileItem.contractorExtracted = contractor || "";
+
     ocrDot.className = desc ? "dot ok" : "dot err";
     ocrStatus.textContent = desc ? "OK" : "No text found";
     return fileItem.woExtracted;
@@ -198,6 +270,7 @@ async function ensureWorkOrderExtracted(fileItem) {
     ocrDot.className = "dot err";
     ocrStatus.textContent = "OCR error";
     fileItem.woExtracted = "";
+    fileItem.contractorExtracted = "";
     return "";
   }
 }
@@ -252,7 +325,7 @@ dropzone.addEventListener("drop", async e => {
 
       for (const entry of entries) {
         const blob = await zip.file(entry.name).async("blob");
-        files.push({ zipName: entry.name, blob, classify: null, woExtracted: null });
+        files.push({ zipName: entry.name, blob, classify: null, woExtracted: null, contractorExtracted: null });
       }
     } catch (err) {
       console.error(err);
@@ -265,7 +338,7 @@ dropzone.addEventListener("drop", async e => {
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
     const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
     for (const f of sorted) {
-      files.push({ zipName: f.name, blob: f, classify: null, woExtracted: null });
+      files.push({ zipName: f.name, blob: f, classify: null, woExtracted: null, contractorExtracted: null });
     }
   }
 
@@ -466,7 +539,38 @@ function pickFolderByFilename(finalName) {
 }
 
 // =======================================
-// ZIP generation (unchanged)
+// Work Order Mapping Rules (filename substitutions)
+// =======================================
+function mapWorkOrderDescription(desc, contractorText) {
+  const hay = `${desc || ""} ${contractorText || ""}`.trim();
+
+  // Contractor-led mappings (override description mappings)
+  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) {
+    return "ASBESTOS REMOVAL";
+  }
+  // Tolerant to "ENVIRONMENTAL" / "ENVIROMENTAL"
+  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
+      fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) {
+    return "ASBESTOS SURVEY";
+  }
+  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) {
+    return "RODGERS ISOLATOR";
+  }
+
+  // Description-led mappings
+  if (fuzzyIncludesPhrase(hay, "DEEP", 1)) {
+    return "PERFECT DEEP";
+  }
+  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) {
+    return "PERFECT SPARKLE";
+  }
+
+  // No mapping → use original description
+  return null;
+}
+
+// =======================================
+// ZIP generation (with new mapping rules)
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
@@ -503,9 +607,15 @@ async function buildAndDownload() {
           bmdCount++;
           newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
           break;
-        case "WORK_ORDER":
-          newName = `${address} - VOID ${cleanPunc(c.desc)} WORK ORDER REQUEST.pdf`;
+
+        case "WORK_ORDER": {
+          // Apply mapping rules first (contractor overrides, then desc)
+          const contractorText = item.contractorExtracted || "";
+          const mapped = mapWorkOrderDescription(c.desc, contractorText);
+          const finalDesc = cleanPunc(mapped || c.desc);
+          newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
           break;
+        }
       }
     }
 
