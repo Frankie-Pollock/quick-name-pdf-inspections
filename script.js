@@ -439,15 +439,16 @@ async function showCurrent() {
   //---------------------------------------
   // ⭐ RADIO PERSISTENCE PATCH ⭐
   //---------------------------------------
-  if (idx === 0 && !current?.kind) {
-      setSelectedKind("CHECKLIST");   // Auto select ONLY first file
-  }
-  else if (current?.kind) {
-      setSelectedKind(current.kind);  // Restore user's selection
-  }
-  else {
-      setSelectedKind(null);          // Leave blank
-  }
+// ⭐ CORRECT & STABLE RADIO RESTORE ⭐
+if (files[idx].classify && files[idx].classify.kind) {
+    setSelectedKind(files[idx].classify.kind);
+} 
+else if (idx === 0) {
+    setSelectedKind("CHECKLIST");
+} 
+else {
+    setSelectedKind(null);
+}
 
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
@@ -483,37 +484,41 @@ async function renderPreview(blob) {
   }
 }
 
-
-
-// ================================
-// RADIO CHANGE → IMMEDIATE SAVE + OCR
-// ================================
-$$("input[name='kind']").forEach(r =>
-  r.addEventListener("change", async () => {
-
     //-----------------------------------
     // ⭐ SAVE RADIO CHOICE IMMEDIATELY ⭐
     //-----------------------------------
-    const kind = r.value;
-    const descVal = (kind === "WORK_ORDER") ? cleanPunc(descIn.value) : "";
-    files[idx].classify = { kind: kind, desc: descVal };
+  $$("input[name='kind']").forEach(r =>
+  r.addEventListener("change", async () => {
 
+    const kind = r.value;
+
+    // --- SAVE IMMEDIATELY ---
+    if (kind === "WORK_ORDER") {
+      files[idx].classify = { kind: kind, desc: cleanPunc(descIn.value) };
+    } else {
+      files[idx].classify = { kind: kind, desc: "" };
+    }
+
+    // --- UI toggle ---
     descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
 
+    // --- Work Order OCR ---
     if (kind === "WORK_ORDER") {
       const current = files[idx];
 
-      // Already extracted earlier?
       if (current.woExtracted != null) {
         descIn.value = current.woExtracted;
         ocrBadge.classList.remove("hidden");
         return;
       }
 
-      descIn.value = "";  // clear UI while scanning
+      descIn.value = "";
       const extracted = await ensureWorkOrderExtracted(current);
       descIn.value = extracted || "";
       ocrBadge.classList.remove("hidden");
+
+      // save again after OCR fills description
+      files[idx].classify.desc = cleanPunc(descIn.value);
     }
   })
 );
