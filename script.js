@@ -1,3 +1,16 @@
+
+// =======================================
+// FAST WORKFLOW: Fixed-crop OCR only for Work Orders
+// =======================================
+
+// ---- Crop settings (percentages of page) ----
+// These values target the cell under "DESCRIPTION OF WORKS REQUIRED"
+// Adjust if your scans differ slightly.
+const CROP_TOP_PCT = 0.28;    // 28% down from page top
+const CROP_BOTTOM_PCT = 0.45; // 45% down from page top
+const CROP_LEFT_PCT = 0.05;   // 5% from left edge
+const CROP_RIGHT_PCT = 0.95;  // 95% (i.e., 5% from right edge)
+
 // =======================================
 // Utility helpers
 // =======================================
@@ -54,116 +67,139 @@ const errBox = $("#err");
 const prevBtn = $("#prevBtn");
 const nextBtn = $("#nextBtn");
 const finishBtn = $("#finishBtn");
+
 const ocrBadge = $("#ocrBadge");
 const ocrDot = $("#ocrDot");
 const ocrStatus = $("#ocrStatus");
 
 // =======================================
-// OCR helpers – only for Work Orders
+// PDF rendering helpers
 // =======================================
+async function renderPdfPageToCanvas(blob, pageNum = 1, scale = 2.2) {
+  const buf = await blob.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  const page = await pdf.getPage(pageNum);
 
-/**
- * Render ALL pages of a PDF blob into canvases and OCR with Tesseract.
- * Returns raw text (uppercase/cleaning applied by caller).
- */
-async function ocrAllPages(blob) {
-  // UI status
+  const viewport = page.getViewport({ scale });
+  const c = document.createElement("canvas");
+  const cx = c.getContext("2d");
+  c.width = viewport.width;
+  c.height = viewport.height;
+  await page.render({ canvasContext: cx, viewport }).promise;
+  return c;
+}
+
+function cropFixedRegion(pageCanvas) {
+  const W = pageCanvas.width;
+  const H = pageCanvas.height;
+
+  const x0 = Math.round(W * CROP_LEFT_PCT);
+  const x1 = Math.round(W * CROP_RIGHT_PCT);
+  const y0 = Math.round(H * CROP_TOP_PCT);
+  const y1 = Math.round(H * CROP_BOTTOM_PCT);
+
+  const w = Math.max(10, x1 - x0);
+  const h = Math.max(10, y1 - y0);
+
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const oc = out.getContext("2d");
+  oc.drawImage(pageCanvas, x0, y0, w, h, 0, 0, w, h);
+  return out;
+}
+
+// Simple enhancement: grayscale + auto-levels + soft threshold push
+function enhanceForOcr(srcCanvas) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const dst = document.createElement("canvas");
+  dst.width = w;
+  dst.height = h;
+  const dctx = dst.getContext("2d");
+  dctx.drawImage(srcCanvas, 0, 0);
+
+  const img = dctx.getImageData(0, 0, w, h);
+  const data = img.data;
+
+  // Build histogram on grayscale
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const y = (0.299 * r + 0.587 * g + 0.114 * b) | 0;
+    hist[y]++;
+    data[i] = data[i + 1] = data[i + 2] = y;
+  }
+
+  // Auto-levels using 1% clip
+  const total = w * h;
+  const clip = Math.max(1, Math.round(total * 0.01));
+  let lo = 0, hi = 255, acc = 0;
+
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > clip) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > clip) { hi = v; break; } }
+
+  const range = Math.max(1, hi - lo);
+
+  for (let i = 0; i < data.length; i += 4) {
+    let y = data[i];
+    y = ((y - lo) * 255 / range);
+    y = Math.max(0, Math.min(255, y));
+    if (y > 170) y = Math.min(255, y + 20); // push highlights slightly
+    data[i] = data[i + 1] = data[i + 2] = y;
+  }
+
+  dctx.putImageData(img, 0, 0);
+  return dst;
+}
+
+// OCR of cropped region → first non-empty line, cleaned
+async function ocrCroppedSingleLine(cropCanvas) {
+  const enhanced = enhanceForOcr(cropCanvas);
+
+  // Strict pass: single line, uppercase whitelist
+  const res1 = await Tesseract.recognize(enhanced, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+    tessedit_pageseg_mode: 7 // single line
+  });
+
+  let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (lines.length) return cleanPunc(lines[0]);
+
+  // Fallback pass: block of text (just in case)
+  const res2 = await Tesseract.recognize(enhanced, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+    tessedit_pageseg_mode: 6 // uniform block
+  });
+
+  lines = (res2?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  return lines.length ? cleanPunc(lines[0]) : "";
+}
+
+// ---- Pipeline run when Work Order is selected
+async function ensureWorkOrderExtracted(fileItem) {
+  if (fileItem.woExtracted != null) return fileItem.woExtracted;
+
   ocrDot.className = "dot busy";
-  ocrStatus.textContent = "OCR scanning…";
+  ocrStatus.textContent = "Scanning…";
 
   try {
-    const buf = await blob.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
+    const crop = cropFixedRegion(pageCanvas);
+    const desc = await ocrCroppedSingleLine(crop);
 
-    let combined = "";
-    for (let n = 1; n <= pdf.numPages; n++) {
-      const page = await pdf.getPage(n);
-
-      // Higher scale improves OCR quality on scans
-      const viewport = page.getViewport({ scale: 2.0 });
-      const c = document.createElement("canvas");
-      const cx = c.getContext("2d");
-      c.width = viewport.width;
-      c.height = viewport.height;
-
-      await page.render({ canvasContext: cx, viewport }).promise;
-
-      const { data: { text } } = await Tesseract.recognize(c, "eng");
-      combined += `\n${text}`;
-    }
-
-    ocrDot.className = "dot ok";
-    ocrStatus.textContent = "OCR OK";
-    return combined;
-
-  } catch (err) {
-    console.error("OCR FAILED:", err);
+    fileItem.woExtracted = desc || ""; // cache even if empty
+    ocrDot.className = desc ? "dot ok" : "dot err";
+    ocrStatus.textContent = desc ? "OK" : "No text found";
+    return fileItem.woExtracted;
+  } catch (e) {
+    console.error("WO fixed-crop OCR failed", e);
     ocrDot.className = "dot err";
-    ocrStatus.textContent = "OCR ERROR";
+    ocrStatus.textContent = "OCR error";
+    fileItem.woExtracted = "";
     return "";
   }
-}
-
-/**
- * Extract the Work Order description from OCR text.
- * We look for:
- *   "DESCRIPTION OF WORKS REQUIRED"
- * and stop at the next heading that begins with:
- *   "OUTCOME OF ONSITE"
- * Then we return ONLY the FIRST non-empty line from inside this block (Option A).
- */
-function extractWorkOrderDescription(rawText) {
-  if (!rawText) return "";
-
-  // Normalise spacing for robust matching
-  const normalized = rawText
-    .replace(/\r/g, "")
-    .replace(/[^\S\r\n]+/g, " "); // collapse horizontal whitespace
-
-  // Case-insensitive indices for the section headers
-  const hay = normalized.toUpperCase();
-
-  // Find the start after "DESCRIPTION OF WORKS REQUIRED"
-  const startHeader = "DESCRIPTION OF WORKS REQUIRED";
-  const startIdx = hay.indexOf(startHeader);
-  if (startIdx === -1) return ""; // Can't find the header → no extraction
-
-  // Slice content after the header line
-  let after = normalized.slice(startIdx + startHeader.length);
-
-  // Stop at the next known header "OUTCOME OF ONSITE"
-  const stopHeader = "OUTCOME OF ONSITE";
-  const stopInAfter = after.toUpperCase().indexOf(stopHeader);
-  if (stopInAfter !== -1) {
-    after = after.slice(0, stopInAfter);
-  }
-
-  // Now 'after' is the block of interest.
-  // Split into lines and pick the FIRST non-blank line (Option A).
-  const lines = after
-    .split(/\n+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  if (!lines.length) return "";
-
-  // Clean punctuation + uppercase to match your file naming convention
-  return cleanPunc(lines[0]);
-}
-
-/**
- * Run OCR for current file to extract WO description.
- * Caches to files[idx].woExtracted so repeated selections are instant.
- */
-async function ensureWorkOrderExtracted(current) {
-  if (current.woExtracted) {
-    // Already OCR'd and extracted for this file
-    return current.woExtracted;
-  }
-  const raw = await ocrAllPages(current.blob);
-  const desc = extractWorkOrderDescription(raw);
-  current.woExtracted = desc || ""; // cache even if empty to avoid repeat OCR
-  return current.woExtracted;
 }
 
 // =======================================
@@ -205,7 +241,6 @@ dropzone.addEventListener("drop", async e => {
     try {
       const zip = await JSZip.loadAsync(droppedFiles[0]);
 
-      // Get file entries, PDFs only, sorted naturally by full path/name
       const entries = Object.values(zip.files)
         .filter(f => !f.dir && f.name.toLowerCase().endsWith(".pdf"))
         .sort((a, b) => naturalSort(a.name, b.name));
@@ -226,7 +261,7 @@ dropzone.addEventListener("drop", async e => {
     }
   }
 
-  // CASE 2 — MULTIPLE PDFs (or single)
+  // CASE 2 — MULTIPLE PDFs
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
     const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
     for (const f of sorted) {
@@ -267,7 +302,7 @@ function setSelectedKind(kind) {
 async function showCurrent() {
   errBox.classList.add("hidden");
   ocrBadge.classList.add("hidden");
-  ocrDot.className = "dot"; // reset per screen
+  ocrDot.className = "dot";
   ocrStatus.textContent = "Idle";
 
   idxSpan.textContent = String(idx + 1);
@@ -278,8 +313,9 @@ async function showCurrent() {
 
   const current = files[idx].classify;
 
-  // Reset form state
   setSelectedKind(current?.kind || null);
+
+  // Ensure Work Order field visibility + content
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
 
@@ -312,28 +348,25 @@ async function renderPreview(blob) {
   }
 }
 
-// Toggle Work Order description box on radio changes.
-// If user selects WORK_ORDER, immediately OCR & autofill description.
+// When user changes type:
+// If "WORK_ORDER" → run fixed-crop OCR once and autofill
 $$("input[name='kind']").forEach(r =>
   r.addEventListener("change", async () => {
     const kind = getSelectedKind();
     descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
 
-    // If user selects Work Order → run OCR once for this file
     if (kind === "WORK_ORDER") {
       const current = files[idx];
 
-      // Already extracted via cache? Autofill directly.
       if (current.woExtracted != null) {
         descIn.value = current.woExtracted;
         ocrBadge.classList.remove("hidden");
         return;
       }
 
-      // Otherwise run OCR now
       descIn.value = ""; // clear while scanning
       const extracted = await ensureWorkOrderExtracted(current);
-      descIn.value = extracted || ""; // may be empty if not found
+      descIn.value = extracted || ""; // may be empty if no text
       ocrBadge.classList.remove("hidden");
     }
   })
@@ -405,7 +438,7 @@ function saveChoice() {
 }
 
 // =======================================
-// Folder Routing (unchanged rules)
+// Folder Routing (same rules)
 // =======================================
 function pickFolderByFilename(finalName) {
   const n = (finalName || "").toUpperCase();
@@ -433,7 +466,7 @@ function pickFolderByFilename(finalName) {
 }
 
 // =======================================
-// ZIP generation
+// ZIP generation (unchanged)
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
