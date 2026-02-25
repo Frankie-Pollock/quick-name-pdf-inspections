@@ -23,89 +23,22 @@ function uniquify(name, existing) {
   return unique;
 }
 
-// Natural sort for filenames
+// Natural sort for filenames (e.g., A2 before A10)
 function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
 // =======================================
-// OCR ALL PAGES using Tesseract.js
-// =======================================
-async function ocrPdfAllPages(blob) {
-  ocrDot.className = "dot busy";
-  ocrStatus.textContent = "OCR scanning…";
-
-  try {
-    const buf = await blob.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-
-    let combined = "";
-
-    for (let n = 1; n <= pdf.numPages; n++) {
-      const page = await pdf.getPage(n);
-      const viewport = page.getViewport({ scale: 2.0 });
-
-      const c = document.createElement("canvas");
-      const cx = c.getContext("2d");
-
-      c.width = viewport.width;
-      c.height = viewport.height;
-
-      await page.render({ canvasContext: cx, viewport }).promise;
-
-      const r = await Tesseract.recognize(c, "eng");
-      combined += "\n" + r.data.text;
-    }
-
-    ocrDot.className = "dot ok";
-    ocrStatus.textContent = "OCR OK";
-
-    return cleanPunc(combined);
-
-  } catch (err) {
-    console.error("OCR FAILED:", err);
-    ocrDot.className = "dot err";
-    ocrStatus.textContent = "OCR ERROR";
-    return "";
-  }
-}
-
-// =======================================
-// Auto Classification
-// =======================================
-function autoClassify(text) {
-  const t = toUpper(text);
-
-  if (t.includes("INSPECTION") || t.includes("CHECKLIST"))
-    return { kind: "CHECKLIST" };
-
-  if (t.includes("AC GOLD") || t.includes("MTW"))
-    return { kind: "MTW" };
-
-  if (t.includes("RECHARGE"))
-    return { kind: "RECHARGE" };
-
-  if (t.includes("BMD"))
-    return { kind: "BMD" };
-
-  // Work order
-  if (t.includes("WORK") || t.includes("ORDER") || t.includes("REPAIR")) {
-    const desc = cleanPunc(t).slice(0, 80);
-    return { kind: "WORK_ORDER", desc };
-  }
-
-  return { kind: null };
-}
-
-// =======================================
 // State
 // =======================================
-let files = [];
+let files = [];      // [{ zipName, blob, classify?:{kind,desc}, woExtracted?:string }]
 let idx = 0;
 let mtwN = 0;
 let bmdN = 0;
 
-// DOM refs
+// =======================================
+// DOM references
+// =======================================
 const dropzone = $("#dropzone");
 const wizard = $("#wizard");
 const canvas = $("#pdfCanvas");
@@ -126,7 +59,115 @@ const ocrDot = $("#ocrDot");
 const ocrStatus = $("#ocrStatus");
 
 // =======================================
-// Drag & Drop
+// OCR helpers – only for Work Orders
+// =======================================
+
+/**
+ * Render ALL pages of a PDF blob into canvases and OCR with Tesseract.
+ * Returns raw text (uppercase/cleaning applied by caller).
+ */
+async function ocrAllPages(blob) {
+  // UI status
+  ocrDot.className = "dot busy";
+  ocrStatus.textContent = "OCR scanning…";
+
+  try {
+    const buf = await blob.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+
+    let combined = "";
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+
+      // Higher scale improves OCR quality on scans
+      const viewport = page.getViewport({ scale: 2.0 });
+      const c = document.createElement("canvas");
+      const cx = c.getContext("2d");
+      c.width = viewport.width;
+      c.height = viewport.height;
+
+      await page.render({ canvasContext: cx, viewport }).promise;
+
+      const { data: { text } } = await Tesseract.recognize(c, "eng");
+      combined += `\n${text}`;
+    }
+
+    ocrDot.className = "dot ok";
+    ocrStatus.textContent = "OCR OK";
+    return combined;
+
+  } catch (err) {
+    console.error("OCR FAILED:", err);
+    ocrDot.className = "dot err";
+    ocrStatus.textContent = "OCR ERROR";
+    return "";
+  }
+}
+
+/**
+ * Extract the Work Order description from OCR text.
+ * We look for:
+ *   "DESCRIPTION OF WORKS REQUIRED"
+ * and stop at the next heading that begins with:
+ *   "OUTCOME OF ONSITE"
+ * Then we return ONLY the FIRST non-empty line from inside this block (Option A).
+ */
+function extractWorkOrderDescription(rawText) {
+  if (!rawText) return "";
+
+  // Normalise spacing for robust matching
+  const normalized = rawText
+    .replace(/\r/g, "")
+    .replace(/[^\S\r\n]+/g, " "); // collapse horizontal whitespace
+
+  // Case-insensitive indices for the section headers
+  const hay = normalized.toUpperCase();
+
+  // Find the start after "DESCRIPTION OF WORKS REQUIRED"
+  const startHeader = "DESCRIPTION OF WORKS REQUIRED";
+  const startIdx = hay.indexOf(startHeader);
+  if (startIdx === -1) return ""; // Can't find the header → no extraction
+
+  // Slice content after the header line
+  let after = normalized.slice(startIdx + startHeader.length);
+
+  // Stop at the next known header "OUTCOME OF ONSITE"
+  const stopHeader = "OUTCOME OF ONSITE";
+  const stopInAfter = after.toUpperCase().indexOf(stopHeader);
+  if (stopInAfter !== -1) {
+    after = after.slice(0, stopInAfter);
+  }
+
+  // Now 'after' is the block of interest.
+  // Split into lines and pick the FIRST non-blank line (Option A).
+  const lines = after
+    .split(/\n+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return "";
+
+  // Clean punctuation + uppercase to match your file naming convention
+  return cleanPunc(lines[0]);
+}
+
+/**
+ * Run OCR for current file to extract WO description.
+ * Caches to files[idx].woExtracted so repeated selections are instant.
+ */
+async function ensureWorkOrderExtracted(current) {
+  if (current.woExtracted) {
+    // Already OCR'd and extracted for this file
+    return current.woExtracted;
+  }
+  const raw = await ocrAllPages(current.blob);
+  const desc = extractWorkOrderDescription(raw);
+  current.woExtracted = desc || ""; // cache even if empty to avoid repeat OCR
+  return current.woExtracted;
+}
+
+// =======================================
+// Drag & Drop (ZIP or multiple PDFs)
 // =======================================
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
@@ -142,70 +183,68 @@ dropzone.addEventListener("drop", async e => {
   dropzone.style.opacity = 1;
 
   const address = cleanPunc($("#address").value);
-  if (!address) return alert("Please enter the ADDRESS first.");
+  if (!address) {
+    alert("Please enter the ADDRESS first.");
+    return;
+  }
 
   const droppedFiles = Array.from(e.dataTransfer.files);
-  if (!droppedFiles.length) return alert("No files dropped.");
+  if (!droppedFiles.length) {
+    alert("No files dropped.");
+    return;
+  }
 
   files = [];
   mtwN = 0;
   bmdN = 0;
+  ocrDot.className = "dot";
+  ocrStatus.textContent = "Idle";
 
-  // =====================================
-  // CASE A: ZIP
-  // =====================================
+  // CASE 1 — ZIP FILE
   if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
     try {
       const zip = await JSZip.loadAsync(droppedFiles[0]);
 
-      let entries = Object.values(zip.files)
+      // Get file entries, PDFs only, sorted naturally by full path/name
+      const entries = Object.values(zip.files)
         .filter(f => !f.dir && f.name.toLowerCase().endsWith(".pdf"))
         .sort((a, b) => naturalSort(a.name, b.name));
 
-      for (const entry of entries) {
-        const blob = await zip.file(entry.name).async("blob");
-        const text = await ocrPdfAllPages(blob);
-        const guess = autoClassify(text);
-
-        files.push({
-          zipName: entry.name,
-          blob,
-          classify: guess.kind ? guess : null
-        });
+      if (!entries.length) {
+        alert("No PDF files found in the ZIP.");
+        return;
       }
 
+      for (const entry of entries) {
+        const blob = await zip.file(entry.name).async("blob");
+        files.push({ zipName: entry.name, blob, classify: null, woExtracted: null });
+      }
     } catch (err) {
       console.error(err);
-      return alert("Could not read ZIP.");
+      alert("Failed to read ZIP.");
+      return;
     }
   }
 
-  // =====================================
-  // CASE B: MULTIPLE PDFs
-  // =====================================
+  // CASE 2 — MULTIPLE PDFs (or single)
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
-
     const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
-
     for (const f of sorted) {
-      const text = await ocrPdfAllPages(f);
-      const guess = autoClassify(text);
-
-      files.push({
-        zipName: f.name,
-        blob: f,
-        classify: guess.kind ? guess : null
-      });
+      files.push({ zipName: f.name, blob: f, classify: null, woExtracted: null });
     }
-
-  } else {
-    return alert("Please drop a ZIP or PDFs only.");
   }
 
-  // Show wizard
+  // CASE 3 — Mixed or invalid
+  else {
+    alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs (only PDFs)");
+    return;
+  }
+
+  // Start wizard
   idx = 0;
   wizard.classList.remove("hidden");
   dropzone.classList.add("hidden");
+
   totSpan.textContent = files.length;
   mtwSpan.textContent = "0";
   bmdSpan.textContent = "0";
@@ -214,48 +253,41 @@ dropzone.addEventListener("drop", async e => {
 });
 
 // =======================================
-// Show current file
+// UI + Preview
 // =======================================
 function getSelectedKind() {
   const r = $$("input[name='kind']").find(x => x.checked);
   return r ? r.value : null;
 }
 
-function setSelectedKind(v) {
-  $$("input[name='kind']").forEach(x => x.checked = (x.value === v));
+function setSelectedKind(kind) {
+  $$("input[name='kind']").forEach(x => x.checked = (x.value === kind));
 }
 
 async function showCurrent() {
   errBox.classList.add("hidden");
   ocrBadge.classList.add("hidden");
+  ocrDot.className = "dot"; // reset per screen
+  ocrStatus.textContent = "Idle";
 
-  idxSpan.textContent = idx + 1;
+  idxSpan.textContent = String(idx + 1);
+
   prevBtn.classList.toggle("muted", idx === 0);
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
   finishBtn.classList.toggle("hidden", idx < files.length - 1);
 
-  const f = files[idx];
-  const c = f.classify;
+  const current = files[idx].classify;
 
-  setSelectedKind(null);
-  descIn.value = "";
-
-  if (c && c.kind) {
-    setSelectedKind(c.kind);
-    if (c.kind === "WORK_ORDER") descIn.value = c.desc || "";
-    ocrBadge.classList.remove("hidden");
-  }
-
+  // Reset form state
+  setSelectedKind(current?.kind || null);
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
+  descIn.value = current?.desc || "";
 
-  fileLabel.textContent = f.zipName;
+  fileLabel.textContent = files[idx].zipName;
 
-  await renderPreview(f.blob);
+  await renderPreview(files[idx].blob);
 }
 
-// =======================================
-// Render PDF Preview Page 1
-// =======================================
 async function renderPreview(blob) {
   try {
     const buf = await blob.arrayBuffer();
@@ -263,22 +295,49 @@ async function renderPreview(blob) {
     const page = await pdf.getPage(1);
 
     const desiredWidth = 420;
-    const init = page.getViewport({ scale: 1 });
-    const scale = desiredWidth / init.width;
+    const initialViewport = page.getViewport({ scale: 1 });
+    const scale = desiredWidth / initialViewport.width;
     const viewport = page.getViewport({ scale });
 
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
 
     await page.render({ canvasContext: ctx, viewport }).promise;
-
   } catch (err) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    console.warn("Preview failed", err);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
   }
 }
+
+// Toggle Work Order description box on radio changes.
+// If user selects WORK_ORDER, immediately OCR & autofill description.
+$$("input[name='kind']").forEach(r =>
+  r.addEventListener("change", async () => {
+    const kind = getSelectedKind();
+    descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
+
+    // If user selects Work Order → run OCR once for this file
+    if (kind === "WORK_ORDER") {
+      const current = files[idx];
+
+      // Already extracted via cache? Autofill directly.
+      if (current.woExtracted != null) {
+        descIn.value = current.woExtracted;
+        ocrBadge.classList.remove("hidden");
+        return;
+      }
+
+      // Otherwise run OCR now
+      descIn.value = ""; // clear while scanning
+      const extracted = await ensureWorkOrderExtracted(current);
+      descIn.value = extracted || ""; // may be empty if not found
+      ocrBadge.classList.remove("hidden");
+    }
+  })
+);
 
 // =======================================
 // Navigation
@@ -303,12 +362,12 @@ finishBtn.addEventListener("click", async () => {
 });
 
 // =======================================
-// Validation + Save
+// Validation
 // =======================================
 function validateCurrent() {
   errBox.classList.add("hidden");
-  const k = getSelectedKind();
 
+  const k = getSelectedKind();
   if (!k) {
     errBox.textContent = "Please choose a type.";
     errBox.classList.remove("hidden");
@@ -318,69 +377,72 @@ function validateCurrent() {
   if (k === "WORK_ORDER") {
     const d = cleanPunc(descIn.value);
     if (!d) {
-      errBox.textContent = "Enter Work Order description.";
+      errBox.textContent = "Please enter the Work Order description.";
       errBox.classList.remove("hidden");
       return false;
     }
   }
+
   return true;
 }
 
+// =======================================
+// Save classification
+// =======================================
 function saveChoice() {
   const k = getSelectedKind();
   const d = k === "WORK_ORDER" ? cleanPunc(descIn.value) : "";
-
   files[idx].classify = { kind: k, desc: d };
 
   if (k === "MTW") {
     mtwN++;
-    mtwSpan.textContent = mtwN;
+    mtwSpan.textContent = String(mtwN);
   }
   if (k === "BMD") {
     bmdN++;
-    bmdSpan.textContent = bmdN;
+    bmdSpan.textContent = String(bmdN);
   }
 }
 
 // =======================================
-// Folder Routing
+// Folder Routing (unchanged rules)
 // =======================================
-function pickFolderByFilename(n) {
-  const name = toUpper(n);
+function pickFolderByFilename(finalName) {
+  const n = (finalName || "").toUpperCase();
 
-  if (name.includes("ASBESTOS") || name.includes("LIFE") || name.includes("ASPECT"))
+  // ASBESTOS group
+  const hasAsbestos = n.includes("ASBESTOS");
+  const hasContractor = n.includes("LIFE") || n.includes("ASPECT");
+  const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
+
+  if (hasAsbestos || hasContractor || (hasRemovalOrSurvey && (hasAsbestos || hasContractor))) {
     return "Asbestos";
-  if (name.includes("INSPECTION"))
-    return "Inspection Checklist";
-  if (name.includes("CLEAN"))
-    return "Cleans + Clearouts";
-  if (name.includes("EICR"))
-    return "Periodic - Rewires";
-  if (name.includes("EPC"))
-    return "EPC";
-  if (name.includes("ROT WORKS"))
-    return "Rot Works";
-  if (name.includes("RECHARGE"))
-    return "Rechargeable Repairs";
-  if (name.includes("AC GOLD"))
-    return "MTW";
-  if (name.includes("BMD WORKS"))
-    return "NEC Lines";
+  }
 
-  return "";
+  if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
+  if (n.includes("CLEAN")) return "Cleans + Clearouts";
+  if (n.includes("EICR")) return "Periodic - Rewires";
+  if (n.includes("EPC")) return "EPC";
+  if (n.includes("ROT WORKS")) return "Rot Works";
+  if (n.includes("RECHARGE")) return "Rechargeable Repairs";
+  if (n.includes("AC GOLD MTW")) return "MTW";
+  if (n.includes("AC GOLD")) return "MTW";
+  if (n.includes("BMD WORKS")) return "NEC Lines";
+
+  return ""; // default → ZIP root
 }
 
 // =======================================
-// Build ZIP
+// ZIP generation
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
   const zip = new JSZip();
 
   const seenByFolder = new Map();
-  const seenSet = f => {
-    if (!seenByFolder.has(f)) seenByFolder.set(f, new Set());
-    return seenByFolder.get(f);
+  const seenSet = folder => {
+    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+    return seenByFolder.get(folder);
   };
 
   let mtwCount = 0;
