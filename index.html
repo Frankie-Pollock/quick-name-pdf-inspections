@@ -1,8 +1,9 @@
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>VOID PDF Renamer</title>
+  <title>VOID PDF Renamer – OCR Classification Wizard</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root { color-scheme: light dark; }
@@ -13,6 +14,7 @@
     .dropzone {
       border: 3px dashed #777; border-radius: 10px;
       padding: 40px; text-align: center; cursor: pointer; margin-top: 12px;
+      transition: opacity 0.2s ease;
     }
     input[type="text"] { width: 520px; max-width: 100%; padding: 10px; font-size: 16px; }
     .preview { width: 420px; max-width: 95vw; }
@@ -28,29 +30,50 @@
     .error { color:#b00020; margin-top: 6px; }
     .list { margin-top: 12px; font-size: 0.9rem; line-height: 1.4; }
     .badge { display:inline-block; padding:2px 6px; border-radius: 6px; background:#eee; margin-left: 6px; font-size: 0.8rem; }
+    .statusline { display:flex; align-items:center; gap:8px; margin: 8px 0 10px; }
+    .dot {
+      width:8px; height:8px; border-radius:50%;
+      background:#bbb; display:inline-block;
+    }
+    .dot.busy { background:#f0a500; }
+    .dot.ok { background:#2e7d32; }
+    .dot.err { background:#c62828; }
+    .monospace { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
   </style>
 </head>
 <body>
 
-<h2>VOID PDF Renamer – Classification Wizard</h2>
+<h2>VOID PDF Renamer – OCR Classification Wizard</h2>
 
 <label for="address">Enter Address (exactly as folder name):</label><br/>
 <input id="address" type="text" placeholder="e.g. 12 EXAMPLE STREET" /><br/>
 
-<div id="dropzone" class="dropzone panel">Drag a ZIP file here (scanned PDFs supported)</div>
+<div id="dropzone" class="dropzone panel">
+  Drag a <strong>ZIP</strong> or <strong>one/multiple PDFs</strong> here (OCR auto-detection runs on load)
+</div>
 
 <div id="wizard" class="row hidden" style="margin-top:16px;">
   <!-- LEFT: PDF Preview -->
   <div class="panel preview">
-    <div><strong>Preview:</strong> <span id="fileLabel">—</span></div>
+    <div>
+      <strong>Preview:</strong>
+      <span id="fileLabel">—</span>
+      <span id="ocrBadge" class="badge hidden">Auto-detected</span>
+    </div>
+
     <canvas id="pdfCanvas" class="pdf-canvas" width="420" height="594"></canvas>
-    <div class="hint">Showing page 1. If the scan is blank here, the original PDF may be image-only — that’s fine, use the options on the right.</div>
+    <div class="hint">Showing page 1. OCR scans the page to auto-detect the document type.</div>
+
+    <div class="statusline">
+      <span id="ocrDot" class="dot" aria-hidden="true"></span>
+      <span id="ocrStatus" class="monospace">Idle</span>
+    </div>
   </div>
 
   <!-- RIGHT: Controls -->
   <div class="panel controls">
     <div><strong>Step <span id="idx">0</span> of <span id="total">0</span></strong></div>
-    <div class="hint">Choose what this PDF is. If “Work Order”, type the description (we UPPERCASE & remove punctuation).</div>
+    <div class="hint">We’ll auto-select a type using OCR. You can override below. If “Work Order”, type the description (we UPPERCASE &amp; remove punctuation).</div>
 
     <div class="types">
       <label><input type="radio" name="kind" value="CHECKLIST"> Inspection Checklist</label>
@@ -70,7 +93,7 @@
     <div class="actions">
       <button id="prevBtn" class="muted">◀ Back</button>
       <button id="nextBtn">Next ▶</button>
-      <button id="finishBtn" class="hidden">Finish & Download ZIP</button>
+      <button id="finishBtn" class="hidden">Finish &amp; Download ZIP</button>
     </div>
 
     <div class="list">
@@ -86,12 +109,15 @@
 <script type="module">
   import * as pdfjsLib from './pdf.mjs';
   window.pdfjsLib = pdfjsLib;
-  // IMPORTANT: you have pdf.worker.mjs in the same folder
+  // IMPORTANT: keep pdf.worker.mjs in the same folder
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
 </script>
 
 <!-- JSZip (UMD) -->
 <script src="./jszip.min.js"></script>
+
+<!-- Tesseract.js (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
 <!-- App logic -->
 <script src="./script.js"></script>
