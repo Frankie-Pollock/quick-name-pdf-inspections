@@ -526,7 +526,12 @@ function pickFolderByFilename(finalName) {
   }
 
   if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
-  if (n.includes("CLEAN")) return "Cleans + Clearouts";
+// Cleans + Clearouts (support new mapped names)
+if (
+    n.includes("CLEAN") ||
+    n.includes("PERFECT DEEP") ||
+    n.includes("PERFECT SPARKLE")
+) return "Cleans + Clearouts";
   if (n.includes("EICR")) return "Periodic - Rewires";
   if (n.includes("EPC")) return "EPC";
   if (n.includes("ROT WORKS")) return "Rot Works";
