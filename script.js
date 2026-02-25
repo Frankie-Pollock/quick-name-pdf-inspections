@@ -434,8 +434,6 @@ async function showCurrent() {
     setSelectedKind(file.classify.kind);
   } else if (idx === 0) {
     setSelectedKind("CHECKLIST");
-  } else {
-    setSelectedKind("CHECKLIST");
   }
 
   const selectedKind = getSelectedKind();
