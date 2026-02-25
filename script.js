@@ -24,31 +24,70 @@ function uniquify(name, existing) {
 }
 
 // =======================================
-// FOLDER ROUTING LOGIC
+// OCR using Tesseract.js
 // =======================================
-function pickFolderByFilename(finalName) {
-  const n = (finalName || "").toUpperCase();
+async function ocrPdfFirstPage(blob) {
+  ocrDot.className = "dot busy";
+  ocrStatus.textContent = "OCR scanning…";
 
-  // ASBESTOS group
-  const hasAsbestos = n.includes("ASBESTOS");
-  const hasContractor = n.includes("LIFE") || n.includes("ASPECT");
-  const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
+  try {
+    const buf = await blob.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    const page = await pdf.getPage(1);
 
-  if (hasAsbestos || hasContractor || (hasRemovalOrSurvey && (hasAsbestos || hasContractor))) {
-    return "Asbestos";
+    const viewport = page.getViewport({ scale: 2.0 });
+    const c = document.createElement("canvas");
+    const ctx2 = c.getContext("2d");
+
+    c.width = viewport.width;
+    c.height = viewport.height;
+
+    await page.render({ canvasContext: ctx2, viewport }).promise;
+
+    const result = await Tesseract.recognize(
+      c,
+      "eng",
+      { logger: _ => {} }
+    );
+
+    ocrDot.className = "dot ok";
+    ocrStatus.textContent = "OCR OK";
+
+    return cleanPunc(result.data.text);
+  } catch (err) {
+    console.warn("OCR FAILED:", err);
+    ocrDot.className = "dot err";
+    ocrStatus.textContent = "OCR ERROR";
+    return "";
+  }
+}
+
+// =======================================
+// Auto Classification
+// =======================================
+function autoClassify(text) {
+  const t = toUpper(text);
+
+  if (t.includes("INSPECTION") || t.includes("CHECKLIST"))
+    return { kind: "CHECKLIST" };
+
+  if (t.includes("AC GOLD") || t.includes("MTW"))
+    return { kind: "MTW" };
+
+  if (t.includes("RECHARGE"))
+    return { kind: "RECHARGE" };
+
+  if (t.includes("BMD"))
+    return { kind: "BMD" };
+
+  // Work order detection
+  if (t.includes("WORK") || t.includes("ORDER") || t.includes("REPAIR")) {
+    // Take first phrase-ish chunk
+    const desc = cleanPunc(t.slice(0, 80));
+    return { kind: "WORK_ORDER", desc };
   }
 
-  if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
-  if (n.includes("CLEAN")) return "Cleans + Clearouts";
-  if (n.includes("EICR")) return "Periodic - Rewires";
-  if (n.includes("EPC")) return "EPC";
-  if (n.includes("ROT WORKS")) return "Rot Works";
-  if (n.includes("RECHARGE")) return "Rechargeable Repairs";
-  if (n.includes("AC GOLD MTW")) return "MTW";
-  if (n.includes("AC GOLD")) return "MTW";
-  if (n.includes("BMD WORKS")) return "NEC Lines";
-
-  return ""; // default → ZIP root
+  return { kind: null };
 }
 
 // =======================================
@@ -77,9 +116,12 @@ const errBox = $("#err");
 const prevBtn = $("#prevBtn");
 const nextBtn = $("#nextBtn");
 const finishBtn = $("#finishBtn");
+const ocrBadge = $("#ocrBadge");
+const ocrDot = $("#ocrDot");
+const ocrStatus = $("#ocrStatus");
 
 // =======================================
-// Drag & Drop (UPDATED TO SUPPORT ZIP OR MULTIPLE PDFs)
+// Drag & Drop
 // =======================================
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
@@ -101,16 +143,13 @@ dropzone.addEventListener("drop", async e => {
   }
 
   const droppedFiles = Array.from(e.dataTransfer.files);
-  if (!droppedFiles.length) {
-    alert("No files dropped.");
-    return;
-  }
+  if (!droppedFiles.length) return alert("No files dropped.");
 
   files = [];
   mtwN = 0;
   bmdN = 0;
 
-  // CASE 1 — ZIP FILE
+  // ZIP
   if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
     try {
       const zip = await JSZip.loadAsync(droppedFiles[0]);
@@ -118,49 +157,46 @@ dropzone.addEventListener("drop", async e => {
         f => !f.dir && f.name.toLowerCase().endsWith(".pdf")
       );
 
-      if (!entries.length) {
-        alert("No PDF files found in the ZIP.");
-        return;
-      }
-
       for (const entry of entries) {
         const blob = await zip.file(entry.name).async("blob");
-        files.push({ zipName: entry.name, blob, classify: null });
+        const text = await ocrPdfFirstPage(blob);
+        const guess = autoClassify(text);
+        files.push({
+          zipName: entry.name,
+          blob,
+          classify: guess.kind ? guess : null
+        });
       }
     } catch (err) {
       console.error(err);
-      alert("Failed to read ZIP.");
-      return;
+      return alert("Unable to read ZIP.");
     }
   }
 
-  // CASE 2 — MULTIPLE PDFs OR A SINGLE PDF
+  // Multiple PDFs
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
     for (const f of droppedFiles) {
+      const text = await ocrPdfFirstPage(f);
+      const guess = autoClassify(text);
       files.push({
         zipName: f.name,
         blob: f,
-        classify: null
+        classify: guess.kind ? guess : null
       });
     }
   }
 
-  // CASE 3 — MIXED FILES
-  else {
-    alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs (only PDFs)");
-    return;
-  }
+  else return alert("Please drop a ZIP or PDFs only.");
 
   // Start wizard
   idx = 0;
   wizard.classList.remove("hidden");
   dropzone.classList.add("hidden");
-
   totSpan.textContent = files.length;
   mtwSpan.textContent = "0";
   bmdSpan.textContent = "0";
 
-  showCurrent();
+  await showCurrent();
 });
 
 // =======================================
@@ -177,24 +213,31 @@ function setSelectedKind(kind) {
 
 async function showCurrent() {
   errBox.classList.add("hidden");
+  ocrBadge.classList.add("hidden");
 
-  idxSpan.textContent = String(idx + 1);
+  idxSpan.textContent = idx + 1;
 
   prevBtn.classList.toggle("muted", idx === 0);
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
-  finishBtn.classList.toggle("hidden", idx < files.Length - 1);
+  finishBtn.classList.toggle("hidden", idx < files.length - 1);
 
-  const current = files[idx].classify;
+  const f = files[idx];
+  const c = f.classify;
 
-  setSelectedKind(current?.kind || null);
+  setSelectedKind(null);
+  descIn.value = "";
 
-  // Ensure Work Order field is shown correctly
+  if (c && c.kind) {
+    setSelectedKind(c.kind);
+    if (c.kind === "WORK_ORDER" && c.desc) descIn.value = c.desc;
+    ocrBadge.classList.remove("hidden");
+  }
+
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
-  descIn.value = current?.desc || "";
 
-  fileLabel.textContent = files[idx].zipName;
+  fileLabel.textContent = f.zipName;
 
-  await renderPreview(files[idx].blob);
+  await renderPreview(f.blob);
 }
 
 async function renderPreview(blob) {
@@ -216,7 +259,6 @@ async function renderPreview(blob) {
 
     await page.render({ canvasContext: ctx, viewport }).promise;
   } catch (err) {
-    console.warn("Preview failed", err);
     ctx.clearRect(0,0,canvas.width,canvas.height);
   }
 }
@@ -254,14 +296,12 @@ finishBtn.addEventListener("click", async () => {
 // =======================================
 function validateCurrent() {
   errBox.classList.add("hidden");
-
   const k = getSelectedKind();
   if (!k) {
     errBox.textContent = "Please choose a type.";
     errBox.classList.remove("hidden");
     return false;
   }
-
   if (k === "WORK_ORDER") {
     const d = cleanPunc(descIn.value);
     if (!d) {
@@ -270,7 +310,6 @@ function validateCurrent() {
       return false;
     }
   }
-
   return true;
 }
 
@@ -284,16 +323,44 @@ function saveChoice() {
 
   if (k === "MTW") {
     mtwN++;
-    mtwSpan.textContent = String(mtwN);
+    mtwSpan.textContent = mtwN;
   }
   if (k === "BMD") {
     bmdN++;
-    bmdSpan.textContent = String(bmdN);
+    bmdSpan.textContent = bmdN;
   }
 }
 
 // =======================================
-// ZIP generation (WITH FOLDERS + SKIPPED FILE FIX)
+// Folder Routing
+// =======================================
+function pickFolderByFilename(n) {
+  const name = toUpper(n);
+
+  if (name.includes("ASBESTOS") || name.includes("LIFE") || name.includes("ASPECT"))
+    return "Asbestos";
+  if (name.includes("INSPECTION"))
+    return "Inspection Checklist";
+  if (name.includes("CLEAN"))
+    return "Cleans + Clearouts";
+  if (name.includes("EICR"))
+    return "Periodic - Rewires";
+  if (name.includes("EPC"))
+    return "EPC";
+  if (name.includes("ROT WORKS"))
+    return "Rot Works";
+  if (name.includes("RECHARGE"))
+    return "Rechargeable Repairs";
+  if (name.includes("AC GOLD"))
+    return "MTW";
+  if (name.includes("BMD WORKS"))
+    return "NEC Lines";
+
+  return "";
+}
+
+// =======================================
+// ZIP BUILD
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
@@ -319,17 +386,21 @@ async function buildAndDownload() {
         case "CHECKLIST":
           newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
           break;
+
         case "MTW":
           mtwCount++;
           newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
           break;
+
         case "RECHARGE":
           newName = `${address} - VOID_RECHARGEABLE_Works.pdf`;
           break;
+
         case "BMD":
           bmdCount++;
           newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
           break;
+
         case "WORK_ORDER":
           newName = `${address} - VOID ${cleanPunc(c.desc)} WORK ORDER REQUEST.pdf`;
           break;
