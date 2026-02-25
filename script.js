@@ -434,48 +434,76 @@ async function showCurrent() {
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
   finishBtn.classList.toggle("hidden", idx < files.length - 1);
 
-  const current = files[idx].classify;
+  const file = files[idx];
 
   //---------------------------------------
-  // ⭐ RADIO PERSISTENCE PATCH ⭐
+  // ⭐ RADIO RESTORE ⭐
   //---------------------------------------
-// ⭐ CORRECT & STABLE RADIO RESTORE ⭐
-if (files[idx].classify && files[idx].classify.kind) {
-    setSelectedKind(files[idx].classify.kind);
-} 
-else if (idx === 0) {
-    setSelectedKind("CHECKLIST");
-} 
+  if (file.classify && file.classify.kind) {
+      setSelectedKind(file.classify.kind);
+  } else if (idx === 0) {
+      setSelectedKind("CHECKLIST");
+  } else {
+      // Default for new pages
+      setSelectedKind("CHECKLIST");
+  }
 
-  // After setting the radio from saved state:
-if (files[idx].classify?.kind === "WORK_ORDER") {
+  const selectedKind = getSelectedKind();
 
-    const current = files[idx];
+  //---------------------------------------
+  // Show/Hide description input
+  //---------------------------------------
+  descWrap.classList.toggle("hidden", selectedKind !== "WORK_ORDER");
 
-    // If OCR was already done → restore value & badge
-    if (current.woExtracted != null) {
-        descIn.value = current.woExtracted;
-        ocrBadge.classList.remove("hidden");
-    } 
-    // If OCR not done → run it NOW (because "change" won't fire)
-    else {
-        descIn.value = "";
-        const extracted = await ensureWorkOrderExtracted(current);
-        descIn.value = extracted || "";
-        ocrBadge.classList.remove("hidden");
+  //---------------------------------------
+  // ⭐ WORK ORDER AUTO-OCR ⭐
+  //---------------------------------------
+  if (selectedKind === "WORK_ORDER") {
 
-        // save description to classify object
-        current.classify.desc = cleanPunc(descIn.value);
-    }
+      // If OCR already done → restore text + badge
+      if (file.woExtracted != null) {
+          descIn.value = file.woExtracted;
+          ocrBadge.classList.remove("hidden");
+      }
+
+      // If not done → run OCR NOW
+      else {
+          ocrDot.className = "dot busy";
+          ocrStatus.textContent = "Scanning…";
+
+          descIn.value = "";
+
+          const extracted = await ensureWorkOrderExtracted(file);
+
+          descIn.value = extracted || "";
+          ocrBadge.classList.remove("hidden");
+
+          // Save classification object if needed
+          if (!file.classify) file.classify = {};
+
+          file.classify.kind = "WORK_ORDER";
+          file.classify.desc = cleanPunc(descIn.value);
+
+          // update badge colour
+          ocrDot.className = extracted ? "dot ok" : "dot err";
+          ocrStatus.textContent = extracted ? "OK" : "No text found";
+      }
+  }
+
+  //---------------------------------------
+  // Restore text for other pages
+  //---------------------------------------
+  if (selectedKind !== "WORK_ORDER") {
+      descIn.value = file.classify?.desc || "";
+  }
+
+  //---------------------------------------
+  // Render preview
+  //---------------------------------------
+  fileLabel.textContent = file.zipName;
+  await renderPreview(file.blob);
 }
 
-  descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
-  descIn.value = current?.desc || "";
-
-  fileLabel.textContent = files[idx].zipName;
-
-  await renderPreview(files[idx].blob);
-}
 
 
 
