@@ -447,6 +447,28 @@ else if (idx === 0) {
     setSelectedKind("CHECKLIST");
 } 
 
+  // After setting the radio from saved state:
+if (files[idx].classify?.kind === "WORK_ORDER") {
+
+    const current = files[idx];
+
+    // If OCR was already done → restore value & badge
+    if (current.woExtracted != null) {
+        descIn.value = current.woExtracted;
+        ocrBadge.classList.remove("hidden");
+    } 
+    // If OCR not done → run it NOW (because "change" won't fire)
+    else {
+        descIn.value = "";
+        const extracted = await ensureWorkOrderExtracted(current);
+        descIn.value = extracted || "";
+        ocrBadge.classList.remove("hidden");
+
+        // save description to classify object
+        current.classify.desc = cleanPunc(descIn.value);
+    }
+}
+
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
 
