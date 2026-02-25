@@ -10,8 +10,12 @@ const CROP_LEFT_PCT = 0.05;   // 5% from left edge
 const CROP_RIGHT_PCT = 0.95;  // 95% (i.e., 5% from right edge)
 
 // New: fixed crop for CONTRACTOR/SUPPLIER row (just above the description cell)
-const CONTRACTOR_TOP_PCT = 0.22;     // tune if your scans differ
-const CONTRACTOR_BOTTOM_PCT = 0.28;  // sits immediately above the description band
+// New contractor crop region for improved detection
+const CONTRACTOR_TOP_PCT = 0.18;    
+const CONTRACTOR_BOTTOM_PCT = 0.255;
+
+const CONTRACTOR_LEFT_PCT = CROP_LEFT_PCT;
+const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
 
 
 // =======================================
