@@ -240,6 +240,7 @@ async function ocrCroppedContractor(cropCanvas) {
 
 // ---- Pipeline run when Work Order is selected
 async function ensureWorkOrderExtracted(fileItem) {
+  // If already extracted, skip work
   if (fileItem.woExtracted != null && fileItem.contractorExtracted != null) {
     return fileItem.woExtracted;
   }
@@ -250,20 +251,46 @@ async function ensureWorkOrderExtracted(fileItem) {
   try {
     const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
 
-    // Description crop
+    // 1️⃣ FIRST: OCR the CONTRACTOR row (this decides everything)
+    const contractorCrop = cropFixedContractorRegion(pageCanvas);
+    const contractor = await ocrCroppedContractor(contractorCrop);
+    fileItem.contractorExtracted = contractor || "";
+
+    // NORMALISE
+    const contractorNorm = cleanPunc(contractor);
+
+    // 2️⃣ CONTRACTOR = SPECIAL CASES → SKIP DESCRIPTION OCR
+    if (fuzzyIncludesPhrase(contractorNorm, "ASPECT CONTRACT", 3)) {
+      fileItem.woExtracted = "ASBESTOS REMOVAL";
+      ocrDot.className = "dot ok";
+      ocrStatus.textContent = "Contractor mapped";
+      return fileItem.woExtracted;
+    }
+
+    if (fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIRONMENTAL", 3) ||
+        fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIROMENTAL", 4)) {
+      fileItem.woExtracted = "ASBESTOS SURVEY";
+      ocrDot.className = "dot ok";
+      ocrStatus.textContent = "Contractor mapped";
+      return fileItem.woExtracted;
+    }
+
+    if (fuzzyIncludesPhrase(contractorNorm, "RODGERS ELECTRICAL", 3)) {
+      fileItem.woExtracted = "RODGERS ISOLATOR";
+      ocrDot.className = "dot ok";
+      ocrStatus.textContent = "Contractor mapped";
+      return fileItem.woExtracted;
+    }
+
+    // 3️⃣ If no contractor match → fall back to DESCRIPTION OCR
     const descCrop = cropFixedDescRegion(pageCanvas);
     const desc = await ocrCroppedSingleLine(descCrop);
 
-    // Contractor crop (row above)
-    const contractorCrop = cropFixedContractorRegion(pageCanvas);
-    const contractor = await ocrCroppedContractor(contractorCrop);
-
     fileItem.woExtracted = desc || "";
-    fileItem.contractorExtracted = contractor || "";
-
     ocrDot.className = desc ? "dot ok" : "dot err";
     ocrStatus.textContent = desc ? "OK" : "No text found";
     return fileItem.woExtracted;
+
   } catch (e) {
     console.error("WO fixed-crop OCR failed", e);
     ocrDot.className = "dot err";
@@ -273,7 +300,6 @@ async function ensureWorkOrderExtracted(fileItem) {
     return "";
   }
 }
-
 // =======================================
 // Drag & Drop (ZIP or multiple PDFs)
 // =======================================
