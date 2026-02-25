@@ -1,11 +1,8 @@
 // =======================================
-// FAST WORKFLOW: Fixed-crop OCR only for Work Orders
+// FAST WORKFLOW: Fixed-crop OCR only for Work Orders (Trimmed + Optimised)
 // =======================================
 
 // ---- Crop settings (percentages of page) ----
-// These values target the cells in your form layout.
-
-// Work Order description cell ("DESCRIPTION OF WORKS REQUIRED")
 const CROP_TOP_PCT = 0.30;
 const CROP_BOTTOM_PCT = 0.43;
 const CROP_LEFT_PCT = 0.05;
@@ -47,38 +44,51 @@ function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-// Simple Levenshtein distance (for fuzzy OCR matching)
-function levenshtein(a, b) {
-  a = a || ""; b = b || "";
-  const m = a.length, n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1));
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + cost
-      );
-    }
-  }
-  return dp[m][n];
-}
-
+// --- A2: simplified, fast tokenization + fuzzy ---
 function tokenize(str) {
   return cleanPunc(str).split(/\s+/).filter(Boolean);
 }
 
-// Fuzzy phrase search: sliding token window, distance threshold
-function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
-  const hayTokens = tokenize(haystack);
-  const phraseTokens = tokenize(phrase);
-  if (!hayTokens.length || !phraseTokens.length) return false;
+// Lightweight Levenshtein (OK for short phrases)
+function levenshtein(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const prev = new Array(n + 1);
+  const curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= n; j++) prev[j] = curr[j];
+  }
+  return prev[n];
+}
 
+// A2: fast fuzzy phrase search with a quick direct-include check first
+function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
+  const H = cleanPunc(haystack);
+  const P = cleanPunc(phrase);
+  if (!H || !P) return false;
+
+  // direct include fast-path
+  if (H.includes(P)) return true;
+
+  const hayTokens = H.split(" ");
+  const phraseTokens = P.split(" ");
   const windowSize = phraseTokens.length;
   const target = phraseTokens.join(" ");
+
+  if (hayTokens.length < windowSize) return false;
+
   for (let i = 0; i <= hayTokens.length - windowSize; i++) {
     const window = hayTokens.slice(i, i + windowSize).join(" ");
     if (levenshtein(window, target) <= maxDist) return true;
@@ -89,7 +99,7 @@ function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
 // =======================================
 // State
 // =======================================
-let files = [];      // [{ zipName, blob, classify?:{kind,desc}, woExtracted?:string, contractorExtracted?:string }]
+let files = []; // [{ zipName, blob, classify?:{kind,desc}, woExtracted?:string, contractorExtracted?:string }]
 let idx = 0;
 let mtwN = 0;
 let bmdN = 0;
@@ -118,9 +128,9 @@ const ocrDot = $("#ocrDot");
 const ocrStatus = $("#ocrStatus");
 
 // =======================================
-// PDF rendering helpers
+// PDF rendering helpers (faster scale)
 // =======================================
-async function renderPdfPageToCanvas(blob, pageNum = 1, scale = 2.2) {
+async function renderPdfPageToCanvas(blob, pageNum = 1, scale = 1.5) {
   const buf = await blob.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
   const page = await pdf.getPage(pageNum);
@@ -163,7 +173,7 @@ function cropFixedContractorRegion(pageCanvas) {
 }
 
 // =======================================
-// Image enhancement for OCR (grayscale + auto-level + soft threshold push)
+// Image enhancement (E3: only used for contractor region)
 // =======================================
 function enhanceForOcr(srcCanvas) {
   const w = srcCanvas.width;
@@ -173,11 +183,10 @@ function enhanceForOcr(srcCanvas) {
   dst.height = h;
   const dctx = dst.getContext("2d");
   dctx.drawImage(srcCanvas, 0, 0);
-
   const img = dctx.getImageData(0, 0, w, h);
   const data = img.data;
 
-  // Histogram on grayscale
+  // grayscale + simple auto-level
   const hist = new Array(256).fill(0);
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
@@ -186,7 +195,6 @@ function enhanceForOcr(srcCanvas) {
     data[i] = data[i + 1] = data[i + 2] = y;
   }
 
-  // Auto-levels using ~1% clip
   const total = w * h;
   const clip = Math.max(1, Math.round(total * 0.01));
   let lo = 0, hi = 255, acc = 0;
@@ -201,7 +209,7 @@ function enhanceForOcr(srcCanvas) {
     let y = data[i];
     y = ((y - lo) * 255 / range);
     y = Math.max(0, Math.min(255, y));
-    if (y > 170) y = Math.min(255, y + 20); // push highlights
+    if (y > 170) y = Math.min(255, y + 20); // slight highlight push
     data[i] = data[i + 1] = data[i + 2] = y;
   }
 
@@ -210,48 +218,37 @@ function enhanceForOcr(srcCanvas) {
 }
 
 // =======================================
-// OCR helpers
+// OCR helpers (single-pass, fast)
 // =======================================
 
-// OCR of a cropped region → first non-empty line (cleaned)
-async function ocrCroppedSingleLine(cropCanvas) {
-  const enhanced = enhanceForOcr(cropCanvas);
-
-  // Strict pass: single line, uppercase whitelist
-  const res1 = await Tesseract.recognize(enhanced, "eng", {
+async function ocrFast(cropCanvas) {
+  const res = await Tesseract.recognize(cropCanvas, "eng", {
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 7 // single line
+    tessedit_pageseg_mode: 6 // uniform block (good for 1 line too)
   });
-
-  let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  if (lines.length) return cleanPunc(lines[0]);
-
-  // Fallback: treat as a small uniform block
-  const res2 = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6 // uniform block
-  });
-
-  lines = (res2?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  return lines.length ? cleanPunc(lines[0]) : "";
+  const text = (res?.data?.text || "")
+    .toUpperCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text;
 }
 
-// OCR of contractor region → get whole cleaned text block
+// Description: no enhancement (fast)
+async function ocrCroppedSingleLine(cropCanvas) {
+  return await ocrFast(cropCanvas);
+}
+
+// Contractor: keep enhancement (E3)
 async function ocrCroppedContractor(cropCanvas) {
   const enhanced = enhanceForOcr(cropCanvas);
-  const res = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6
-  });
-  const text = cleanPunc(res?.data?.text || "");
-  return text;
+  return await ocrFast(enhanced);
 }
 
 // =======================================
 // Work Order extraction pipeline (Contractor-first override)
 // =======================================
 async function ensureWorkOrderExtracted(fileItem) {
-  // If already extracted, skip work
   if (fileItem.woExtracted != null && fileItem.contractorExtracted != null) {
     return fileItem.woExtracted;
   }
@@ -260,40 +257,38 @@ async function ensureWorkOrderExtracted(fileItem) {
   ocrStatus.textContent = "Scanning…";
 
   try {
-    const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
+    const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 1.5);
 
-    // 1) FIRST: OCR the CONTRACTOR row (decides everything)
+    // 1) Contractor row first (drives mapping)
     const contractorCrop = cropFixedContractorRegion(pageCanvas);
     const contractor = await ocrCroppedContractor(contractorCrop);
     fileItem.contractorExtracted = contractor || "";
-
-    // NORMALISE
     const contractorNorm = cleanPunc(contractor);
 
-    // 2) CONTRACTOR SPECIAL CASES → SKIP description OCR and map directly
-    if (fuzzyIncludesPhrase(contractorNorm, "ASPECT CONTRACT", 3)) {
+    // 2) Contractor-led mapping (A2 fast fuzzy)
+    if (fuzzyIncludesPhrase(contractorNorm, "ASPECT CONTRACT", 2)) {
       fileItem.woExtracted = "ASBESTOS REMOVAL";
       ocrDot.className = "dot ok";
       ocrStatus.textContent = "Contractor mapped";
       return fileItem.woExtracted;
     }
 
-    if (fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIRONMENTAL", 3) ||
-        fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIROMENTAL", 4)) {
+    if (fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIRONMENTAL", 2) ||
+        fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIROMENTAL", 2)) {
       fileItem.woExtracted = "ASBESTOS SURVEY";
       ocrDot.className = "dot ok";
       ocrStatus.textContent = "Contractor mapped";
       return fileItem.woExtracted;
     }
 
-    if (fuzzyIncludesPhrase(contractorNorm, "RODGERS ELECTRICAL", 3)) {
+    if (fuzzyIncludesPhrase(contractorNorm, "RODGERS ELECTRICAL", 2)) {
       fileItem.woExtracted = "RODGERS ISOLATOR";
       ocrDot.className = "dot ok";
       ocrStatus.textContent = "Contractor mapped";
       return fileItem.woExtracted;
     }
 
-    // 3) If no contractor match → fall back to DESCRIPTION OCR
+    // 3) No contractor match → description OCR
     const descCrop = cropFixedDescRegion(pageCanvas);
     const desc = await ocrCroppedSingleLine(descCrop);
 
@@ -350,7 +345,6 @@ dropzone.addEventListener("drop", async e => {
   if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
     try {
       const zip = await JSZip.loadAsync(droppedFiles[0]);
-
       const entries = Object.values(zip.files)
         .filter(f => !f.dir && f.name.toLowerCase().endsWith(".pdf"))
         .sort((a, b) => naturalSort(a.name, b.name));
@@ -408,8 +402,6 @@ dropzone.addEventListener("drop", async e => {
   await showCurrent();
 });
 
-
-
 // ================================
 // UI + Preview
 // ================================
@@ -422,6 +414,7 @@ function setSelectedKind(kind) {
   $$("input[name='kind']").forEach(x => x.checked = (x.value === kind));
 }
 
+// ---- Patched: auto-run OCR when needed, restore radio reliably ----
 async function showCurrent() {
   errBox.classList.add("hidden");
   ocrBadge.classList.add("hidden");
@@ -436,73 +429,53 @@ async function showCurrent() {
 
   const file = files[idx];
 
-  //---------------------------------------
-  // ⭐ RADIO RESTORE ⭐
-  //---------------------------------------
+  // Restore radio
   if (file.classify && file.classify.kind) {
-      setSelectedKind(file.classify.kind);
+    setSelectedKind(file.classify.kind);
   } else if (idx === 0) {
-      setSelectedKind("CHECKLIST");
+    setSelectedKind("CHECKLIST");
+  } else {
+    setSelectedKind("CHECKLIST");
   }
 
   const selectedKind = getSelectedKind();
 
-  //---------------------------------------
-  // Show/Hide description input
-  //---------------------------------------
+  // Toggle description input for Work Order
   descWrap.classList.toggle("hidden", selectedKind !== "WORK_ORDER");
 
-  //---------------------------------------
-  // ⭐ WORK ORDER AUTO-OCR ⭐
-  //---------------------------------------
+  // Auto-OCR if Work Order selected
   if (selectedKind === "WORK_ORDER") {
+    if (file.woExtracted != null) {
+      // Already OCR'ed → restore
+      descIn.value = file.woExtracted;
+      ocrBadge.classList.remove("hidden");
+    } else {
+      // Not OCR'ed → run now
+      ocrDot.className = "dot busy";
+      ocrStatus.textContent = "Scanning…";
 
-      // If OCR already done → restore text + badge
-      if (file.woExtracted != null) {
-          descIn.value = file.woExtracted;
-          ocrBadge.classList.remove("hidden");
-      }
+      descIn.value = "";
+      const extracted = await ensureWorkOrderExtracted(file);
 
-      // If not done → run OCR NOW
-      else {
-          ocrDot.className = "dot busy";
-          ocrStatus.textContent = "Scanning…";
+      descIn.value = extracted || "";
+      ocrBadge.classList.remove("hidden");
 
-          descIn.value = "";
+      if (!file.classify) file.classify = {};
+      file.classify.kind = "WORK_ORDER";
+      file.classify.desc = cleanPunc(descIn.value);
 
-          const extracted = await ensureWorkOrderExtracted(file);
-
-          descIn.value = extracted || "";
-          ocrBadge.classList.remove("hidden");
-
-          // Save classification object if needed
-          if (!file.classify) file.classify = {};
-
-          file.classify.kind = "WORK_ORDER";
-          file.classify.desc = cleanPunc(descIn.value);
-
-          // update badge colour
-          ocrDot.className = extracted ? "dot ok" : "dot err";
-          ocrStatus.textContent = extracted ? "OK" : "No text found";
-      }
+      ocrDot.className = extracted ? "dot ok" : "dot err";
+      ocrStatus.textContent = extracted ? "OK" : "No text found";
+    }
+  } else {
+    // Non-Work Order: restore text if any
+    descIn.value = file.classify?.desc || "";
   }
 
-  //---------------------------------------
-  // Restore text for other pages
-  //---------------------------------------
-  if (selectedKind !== "WORK_ORDER") {
-      descIn.value = file.classify?.desc || "";
-  }
-
-  //---------------------------------------
   // Render preview
-  //---------------------------------------
   fileLabel.textContent = file.zipName;
   await renderPreview(file.blob);
 }
-
-
-
 
 async function renderPreview(blob) {
   try {
@@ -528,25 +501,22 @@ async function renderPreview(blob) {
   }
 }
 
-    //-----------------------------------
-    // ⭐ SAVE RADIO CHOICE IMMEDIATELY ⭐
-    //-----------------------------------
-  $$("input[name='kind']").forEach(r =>
+// --- Save radio change immediately + trigger OCR when switched to Work Order
+$$("input[name='kind']").forEach(r =>
   r.addEventListener("change", async () => {
-
     const kind = r.value;
 
-    // --- SAVE IMMEDIATELY ---
+    // save immediately
     if (kind === "WORK_ORDER") {
-      files[idx].classify = { kind: kind, desc: cleanPunc(descIn.value) };
+      files[idx].classify = { kind, desc: cleanPunc(descIn.value) };
     } else {
-      files[idx].classify = { kind: kind, desc: "" };
+      files[idx].classify = { kind, desc: "" };
     }
 
-    // --- UI toggle ---
+    // UI toggle
     descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
 
-    // --- Work Order OCR ---
+    // OCR only when switched to Work Order
     if (kind === "WORK_ORDER") {
       const current = files[idx];
 
@@ -561,13 +531,11 @@ async function renderPreview(blob) {
       descIn.value = extracted || "";
       ocrBadge.classList.remove("hidden");
 
-      // save again after OCR fills description
+      // Save again after OCR fills description
       files[idx].classify.desc = cleanPunc(descIn.value);
     }
   })
 );
-
-
 
 // ================================
 // Navigation
@@ -590,8 +558,6 @@ finishBtn.addEventListener("click", async () => {
   saveChoice();
   await buildAndDownload();
 });
-
-
 
 // ================================
 // Validation
@@ -617,8 +583,6 @@ function validateCurrent() {
   return true;
 }
 
-
-
 // ================================
 // Save choice (used by Next/Finish)
 // ================================
@@ -636,8 +600,6 @@ function saveChoice() {
     bmdSpan.textContent = String(bmdN);
   }
 }
-
-
 
 // ================================
 // Folder Routing  (includes PERFECT DEEP/SPARKLE)
@@ -674,25 +636,23 @@ function pickFolderByFilename(finalName) {
   return ""; // default → ZIP root
 }
 
-
-
 // ================================
-// Work Order Mapping Rules
+// Work Order Mapping Rules (A2 thresholds)
 // ================================
 function mapWorkOrderDescription(desc, contractorText) {
   const hay = `${desc || ""} ${contractorText || ""}`.trim();
 
   // Contractor-led (highest priority)
-  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) {
+  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 2)) {
     return "ASBESTOS REMOVAL";
   }
 
-  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
-      fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) {
+  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 2) ||
+      fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 2)) {
     return "ASBESTOS SURVEY";
   }
 
-  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) {
+  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 2)) {
     return "RODGERS ISOLATOR";
   }
 
@@ -701,14 +661,12 @@ function mapWorkOrderDescription(desc, contractorText) {
     return "PERFECT DEEP";
   }
 
-  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) {
+  if (fuzzyIncludesPhrase(hay, "SPARKLE", 1)) {
     return "PERFECT SPARKLE";
   }
 
   return null; // no mapping → use original
 }
-
-
 
 // ================================
 // ZIP generation
@@ -735,7 +693,6 @@ async function buildAndDownload() {
     } else {
 
       switch (c.kind) {
-
         case "CHECKLIST":
           newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
           break;
