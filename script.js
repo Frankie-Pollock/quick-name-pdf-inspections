@@ -23,39 +23,47 @@ function uniquify(name, existing) {
   return unique;
 }
 
+// Natural sort for filenames
+function naturalSort(a, b) {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
 // =======================================
-// OCR using Tesseract.js
+// OCR ALL PAGES using Tesseract.js
 // =======================================
-async function ocrPdfFirstPage(blob) {
+async function ocrPdfAllPages(blob) {
   ocrDot.className = "dot busy";
   ocrStatus.textContent = "OCR scanning…";
 
   try {
     const buf = await blob.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-    const page = await pdf.getPage(1);
 
-    const viewport = page.getViewport({ scale: 2.0 });
-    const c = document.createElement("canvas");
-    const ctx2 = c.getContext("2d");
+    let combined = "";
 
-    c.width = viewport.width;
-    c.height = viewport.height;
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      const viewport = page.getViewport({ scale: 2.0 });
 
-    await page.render({ canvasContext: ctx2, viewport }).promise;
+      const c = document.createElement("canvas");
+      const cx = c.getContext("2d");
 
-    const result = await Tesseract.recognize(
-      c,
-      "eng",
-      { logger: _ => {} }
-    );
+      c.width = viewport.width;
+      c.height = viewport.height;
+
+      await page.render({ canvasContext: cx, viewport }).promise;
+
+      const r = await Tesseract.recognize(c, "eng");
+      combined += "\n" + r.data.text;
+    }
 
     ocrDot.className = "dot ok";
     ocrStatus.textContent = "OCR OK";
 
-    return cleanPunc(result.data.text);
+    return cleanPunc(combined);
+
   } catch (err) {
-    console.warn("OCR FAILED:", err);
+    console.error("OCR FAILED:", err);
     ocrDot.className = "dot err";
     ocrStatus.textContent = "OCR ERROR";
     return "";
@@ -80,10 +88,9 @@ function autoClassify(text) {
   if (t.includes("BMD"))
     return { kind: "BMD" };
 
-  // Work order detection
+  // Work order
   if (t.includes("WORK") || t.includes("ORDER") || t.includes("REPAIR")) {
-    // Take first phrase-ish chunk
-    const desc = cleanPunc(t.slice(0, 80));
+    const desc = cleanPunc(t).slice(0, 80);
     return { kind: "WORK_ORDER", desc };
   }
 
@@ -98,9 +105,7 @@ let idx = 0;
 let mtwN = 0;
 let bmdN = 0;
 
-// =======================================
-// DOM references
-// =======================================
+// DOM refs
 const dropzone = $("#dropzone");
 const wizard = $("#wizard");
 const canvas = $("#pdfCanvas");
@@ -137,10 +142,7 @@ dropzone.addEventListener("drop", async e => {
   dropzone.style.opacity = 1;
 
   const address = cleanPunc($("#address").value);
-  if (!address) {
-    alert("Please enter the ADDRESS first.");
-    return;
-  }
+  if (!address) return alert("Please enter the ADDRESS first.");
 
   const droppedFiles = Array.from(e.dataTransfer.files);
   if (!droppedFiles.length) return alert("No files dropped.");
@@ -149,46 +151,58 @@ dropzone.addEventListener("drop", async e => {
   mtwN = 0;
   bmdN = 0;
 
-  // ZIP
+  // =====================================
+  // CASE A: ZIP
+  // =====================================
   if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
     try {
       const zip = await JSZip.loadAsync(droppedFiles[0]);
-      const entries = Object.values(zip.files).filter(
-        f => !f.dir && f.name.toLowerCase().endsWith(".pdf")
-      );
+
+      let entries = Object.values(zip.files)
+        .filter(f => !f.dir && f.name.toLowerCase().endsWith(".pdf"))
+        .sort((a, b) => naturalSort(a.name, b.name));
 
       for (const entry of entries) {
         const blob = await zip.file(entry.name).async("blob");
-        const text = await ocrPdfFirstPage(blob);
+        const text = await ocrPdfAllPages(blob);
         const guess = autoClassify(text);
+
         files.push({
           zipName: entry.name,
           blob,
           classify: guess.kind ? guess : null
         });
       }
+
     } catch (err) {
       console.error(err);
-      return alert("Unable to read ZIP.");
+      return alert("Could not read ZIP.");
     }
   }
 
-  // Multiple PDFs
+  // =====================================
+  // CASE B: MULTIPLE PDFs
+  // =====================================
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
-    for (const f of droppedFiles) {
-      const text = await ocrPdfFirstPage(f);
+
+    const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
+
+    for (const f of sorted) {
+      const text = await ocrPdfAllPages(f);
       const guess = autoClassify(text);
+
       files.push({
         zipName: f.name,
         blob: f,
         classify: guess.kind ? guess : null
       });
     }
+
+  } else {
+    return alert("Please drop a ZIP or PDFs only.");
   }
 
-  else return alert("Please drop a ZIP or PDFs only.");
-
-  // Start wizard
+  // Show wizard
   idx = 0;
   wizard.classList.remove("hidden");
   dropzone.classList.add("hidden");
@@ -200,15 +214,15 @@ dropzone.addEventListener("drop", async e => {
 });
 
 // =======================================
-// UI + Preview
+// Show current file
 // =======================================
 function getSelectedKind() {
   const r = $$("input[name='kind']").find(x => x.checked);
   return r ? r.value : null;
 }
 
-function setSelectedKind(kind) {
-  $$("input[name='kind']").forEach(x => x.checked = (x.value === kind));
+function setSelectedKind(v) {
+  $$("input[name='kind']").forEach(x => x.checked = (x.value === v));
 }
 
 async function showCurrent() {
@@ -216,7 +230,6 @@ async function showCurrent() {
   ocrBadge.classList.add("hidden");
 
   idxSpan.textContent = idx + 1;
-
   prevBtn.classList.toggle("muted", idx === 0);
   nextBtn.classList.toggle("hidden", idx >= files.length - 1);
   finishBtn.classList.toggle("hidden", idx < files.length - 1);
@@ -229,7 +242,7 @@ async function showCurrent() {
 
   if (c && c.kind) {
     setSelectedKind(c.kind);
-    if (c.kind === "WORK_ORDER" && c.desc) descIn.value = c.desc;
+    if (c.kind === "WORK_ORDER") descIn.value = c.desc || "";
     ocrBadge.classList.remove("hidden");
   }
 
@@ -240,6 +253,9 @@ async function showCurrent() {
   await renderPreview(f.blob);
 }
 
+// =======================================
+// Render PDF Preview Page 1
+// =======================================
 async function renderPreview(blob) {
   try {
     const buf = await blob.arrayBuffer();
@@ -247,27 +263,22 @@ async function renderPreview(blob) {
     const page = await pdf.getPage(1);
 
     const desiredWidth = 420;
-    const initialViewport = page.getViewport({ scale: 1 });
-    const scale = desiredWidth / initialViewport.width;
+    const init = page.getViewport({ scale: 1 });
+    const scale = desiredWidth / init.width;
     const viewport = page.getViewport({ scale });
 
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
 
-    ctx.setTransform(1,0,0,1,0,0);
-    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     await page.render({ canvasContext: ctx, viewport }).promise;
+
   } catch (err) {
-    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 }
-
-$$("input[name='kind']").forEach(r =>
-  r.addEventListener("change", () => {
-    descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
-  })
-);
 
 // =======================================
 // Navigation
@@ -292,20 +303,22 @@ finishBtn.addEventListener("click", async () => {
 });
 
 // =======================================
-// Validation
+// Validation + Save
 // =======================================
 function validateCurrent() {
   errBox.classList.add("hidden");
   const k = getSelectedKind();
+
   if (!k) {
     errBox.textContent = "Please choose a type.";
     errBox.classList.remove("hidden");
     return false;
   }
+
   if (k === "WORK_ORDER") {
     const d = cleanPunc(descIn.value);
     if (!d) {
-      errBox.textContent = "Please enter the Work Order description.";
+      errBox.textContent = "Enter Work Order description.";
       errBox.classList.remove("hidden");
       return false;
     }
@@ -313,12 +326,10 @@ function validateCurrent() {
   return true;
 }
 
-// =======================================
-// Save classification
-// =======================================
 function saveChoice() {
   const k = getSelectedKind();
   const d = k === "WORK_ORDER" ? cleanPunc(descIn.value) : "";
+
   files[idx].classify = { kind: k, desc: d };
 
   if (k === "MTW") {
@@ -360,16 +371,16 @@ function pickFolderByFilename(n) {
 }
 
 // =======================================
-// ZIP BUILD
+// Build ZIP
 // =======================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
   const zip = new JSZip();
 
   const seenByFolder = new Map();
-  const seenSet = folder => {
-    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-    return seenByFolder.get(folder);
+  const seenSet = f => {
+    if (!seenByFolder.has(f)) seenByFolder.set(f, new Set());
+    return seenByFolder.get(f);
   };
 
   let mtwCount = 0;
@@ -386,21 +397,17 @@ async function buildAndDownload() {
         case "CHECKLIST":
           newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
           break;
-
         case "MTW":
           mtwCount++;
           newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
           break;
-
         case "RECHARGE":
           newName = `${address} - VOID_RECHARGEABLE_Works.pdf`;
           break;
-
         case "BMD":
           bmdCount++;
           newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
           break;
-
         case "WORK_ORDER":
           newName = `${address} - VOID ${cleanPunc(c.desc)} WORK ORDER REQUEST.pdf`;
           break;
