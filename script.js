@@ -3,20 +3,19 @@
 // =======================================
 
 // ---- Crop settings (percentages of page) ----
-// These values target the cell under "DESCRIPTION OF WORKS REQUIRED"
-const CROP_TOP_PCT = 0.30;    // 28% down from page top  (Work Order description cell)
-const CROP_BOTTOM_PCT = 0.43; // 45% down from page top
-const CROP_LEFT_PCT = 0.05;   // 5% from left edge
-const CROP_RIGHT_PCT = 0.95;  // 95% (i.e., 5% from right edge)
+// These values target the cells in your form layout.
 
-// New: fixed crop for CONTRACTOR/SUPPLIER row (just above the description cell)
-// New contractor crop region for improved detection
-const CONTRACTOR_TOP_PCT = 0.18;    
+// Work Order description cell ("DESCRIPTION OF WORKS REQUIRED")
+const CROP_TOP_PCT = 0.30;
+const CROP_BOTTOM_PCT = 0.43;
+const CROP_LEFT_PCT = 0.05;
+const CROP_RIGHT_PCT = 0.95;
+
+// CONTRACTOR/SUPPLIER row (just above description cell)
+const CONTRACTOR_TOP_PCT = 0.18;
 const CONTRACTOR_BOTTOM_PCT = 0.255;
-
 const CONTRACTOR_LEFT_PCT = CROP_LEFT_PCT;
 const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
-
 
 // =======================================
 // Utility helpers
@@ -43,12 +42,12 @@ function uniquify(name, existing) {
   return unique;
 }
 
-// Natural sort for filenames (e.g., A2 before A10)
+// Natural sort for filenames (A2 before A10)
 function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-// Simple Levenshtein distance (for fuzzy matching OCR variations)
+// Simple Levenshtein distance (for fuzzy OCR matching)
 function levenshtein(a, b) {
   a = a || ""; b = b || "";
   const m = a.length, n = b.length;
@@ -72,7 +71,7 @@ function tokenize(str) {
   return cleanPunc(str).split(/\s+/).filter(Boolean);
 }
 
-// Fuzzy phrase search: checks sliding windows of tokens
+// Fuzzy phrase search: sliding token window, distance threshold
 function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
   const hayTokens = tokenize(haystack);
   const phraseTokens = tokenize(phrase);
@@ -163,7 +162,9 @@ function cropFixedContractorRegion(pageCanvas) {
   return cropRegion(pageCanvas, CONTRACTOR_LEFT_PCT, CONTRACTOR_RIGHT_PCT, CONTRACTOR_TOP_PCT, CONTRACTOR_BOTTOM_PCT);
 }
 
-// Simple enhancement: grayscale + auto-levels + soft threshold push
+// =======================================
+// Image enhancement for OCR (grayscale + auto-level + soft threshold push)
+// =======================================
 function enhanceForOcr(srcCanvas) {
   const w = srcCanvas.width;
   const h = srcCanvas.height;
@@ -176,7 +177,7 @@ function enhanceForOcr(srcCanvas) {
   const img = dctx.getImageData(0, 0, w, h);
   const data = img.data;
 
-  // Build histogram on grayscale
+  // Histogram on grayscale
   const hist = new Array(256).fill(0);
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
@@ -185,7 +186,7 @@ function enhanceForOcr(srcCanvas) {
     data[i] = data[i + 1] = data[i + 2] = y;
   }
 
-  // Auto-levels using 1% clip
+  // Auto-levels using ~1% clip
   const total = w * h;
   const clip = Math.max(1, Math.round(total * 0.01));
   let lo = 0, hi = 255, acc = 0;
@@ -200,7 +201,7 @@ function enhanceForOcr(srcCanvas) {
     let y = data[i];
     y = ((y - lo) * 255 / range);
     y = Math.max(0, Math.min(255, y));
-    if (y > 170) y = Math.min(255, y + 20); // push highlights slightly
+    if (y > 170) y = Math.min(255, y + 20); // push highlights
     data[i] = data[i + 1] = data[i + 2] = y;
   }
 
@@ -208,7 +209,11 @@ function enhanceForOcr(srcCanvas) {
   return dst;
 }
 
-// OCR of cropped region → first non-empty line, cleaned
+// =======================================
+// OCR helpers
+// =======================================
+
+// OCR of a cropped region → first non-empty line (cleaned)
 async function ocrCroppedSingleLine(cropCanvas) {
   const enhanced = enhanceForOcr(cropCanvas);
 
@@ -221,7 +226,7 @@ async function ocrCroppedSingleLine(cropCanvas) {
   let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (lines.length) return cleanPunc(lines[0]);
 
-  // Fallback: treat as a small block
+  // Fallback: treat as a small uniform block
   const res2 = await Tesseract.recognize(enhanced, "eng", {
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
     tessedit_pageseg_mode: 6 // uniform block
@@ -231,7 +236,7 @@ async function ocrCroppedSingleLine(cropCanvas) {
   return lines.length ? cleanPunc(lines[0]) : "";
 }
 
-// OCR of contractor region → take the most confident line (cleaned)
+// OCR of contractor region → get whole cleaned text block
 async function ocrCroppedContractor(cropCanvas) {
   const enhanced = enhanceForOcr(cropCanvas);
   const res = await Tesseract.recognize(enhanced, "eng", {
@@ -242,7 +247,9 @@ async function ocrCroppedContractor(cropCanvas) {
   return text;
 }
 
-// ---- Pipeline run when Work Order is selected
+// =======================================
+// Work Order extraction pipeline (Contractor-first override)
+// =======================================
 async function ensureWorkOrderExtracted(fileItem) {
   // If already extracted, skip work
   if (fileItem.woExtracted != null && fileItem.contractorExtracted != null) {
@@ -255,7 +262,7 @@ async function ensureWorkOrderExtracted(fileItem) {
   try {
     const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
 
-    // 1️⃣ FIRST: OCR the CONTRACTOR row (this decides everything)
+    // 1) FIRST: OCR the CONTRACTOR row (decides everything)
     const contractorCrop = cropFixedContractorRegion(pageCanvas);
     const contractor = await ocrCroppedContractor(contractorCrop);
     fileItem.contractorExtracted = contractor || "";
@@ -263,7 +270,7 @@ async function ensureWorkOrderExtracted(fileItem) {
     // NORMALISE
     const contractorNorm = cleanPunc(contractor);
 
-    // 2️⃣ CONTRACTOR = SPECIAL CASES → SKIP DESCRIPTION OCR
+    // 2) CONTRACTOR SPECIAL CASES → SKIP description OCR and map directly
     if (fuzzyIncludesPhrase(contractorNorm, "ASPECT CONTRACT", 3)) {
       fileItem.woExtracted = "ASBESTOS REMOVAL";
       ocrDot.className = "dot ok";
@@ -286,7 +293,7 @@ async function ensureWorkOrderExtracted(fileItem) {
       return fileItem.woExtracted;
     }
 
-    // 3️⃣ If no contractor match → fall back to DESCRIPTION OCR
+    // 3) If no contractor match → fall back to DESCRIPTION OCR
     const descCrop = cropFixedDescRegion(pageCanvas);
     const desc = await ocrCroppedSingleLine(descCrop);
 
@@ -304,9 +311,10 @@ async function ensureWorkOrderExtracted(fileItem) {
     return "";
   }
 }
-// =======================================
-// Drag & Drop (ZIP or multiple PDFs)
-// =======================================
+
+// ================================
+// DRAG & DROP (ZIP or multiple PDFs)
+// ================================
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
   dropzone.style.opacity = 0.85;
@@ -354,7 +362,13 @@ dropzone.addEventListener("drop", async e => {
 
       for (const entry of entries) {
         const blob = await zip.file(entry.name).async("blob");
-        files.push({ zipName: entry.name, blob, classify: null, woExtracted: null, contractorExtracted: null });
+        files.push({
+          zipName: entry.name,
+          blob,
+          classify: null,
+          woExtracted: null,
+          contractorExtracted: null
+        });
       }
     } catch (err) {
       console.error(err);
@@ -367,11 +381,16 @@ dropzone.addEventListener("drop", async e => {
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
     const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
     for (const f of sorted) {
-      files.push({ zipName: f.name, blob: f, classify: null, woExtracted: null, contractorExtracted: null });
+      files.push({
+        zipName: f.name,
+        blob: f,
+        classify: null,
+        woExtracted: null,
+        contractorExtracted: null
+      });
     }
   }
 
-  // CASE 3 — Mixed or invalid
   else {
     alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs (only PDFs)");
     return;
@@ -389,9 +408,11 @@ dropzone.addEventListener("drop", async e => {
   await showCurrent();
 });
 
-// =======================================
+
+
+// ================================
 // UI + Preview
-// =======================================
+// ================================
 function getSelectedKind() {
   const r = $$("input[name='kind']").find(x => x.checked);
   return r ? r.value : null;
@@ -415,14 +436,19 @@ async function showCurrent() {
 
   const current = files[idx].classify;
 
-// Auto-select "Inspection Checklist" ONLY on the first file (idx = 0)
-if (idx === 0 && !current?.kind) {
-    setSelectedKind("CHECKLIST");
-} else {
-    setSelectedKind(current?.kind || null);
-}
+  //---------------------------------------
+  // ⭐ RADIO PERSISTENCE PATCH ⭐
+  //---------------------------------------
+  if (idx === 0 && !current?.kind) {
+      setSelectedKind("CHECKLIST");   // Auto select ONLY first file
+  }
+  else if (current?.kind) {
+      setSelectedKind(current.kind);  // Restore user's selection
+  }
+  else {
+      setSelectedKind(null);          // Leave blank
+  }
 
-  // Ensure Work Order field visibility + content
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
 
@@ -430,6 +456,8 @@ if (idx === 0 && !current?.kind) {
 
   await renderPreview(files[idx].blob);
 }
+
+
 
 async function renderPreview(blob) {
   try {
@@ -455,33 +483,46 @@ async function renderPreview(blob) {
   }
 }
 
-// When user changes type:
-// If "WORK_ORDER" → run fixed-crop OCR once and autofill
+
+
+// ================================
+// RADIO CHANGE → IMMEDIATE SAVE + OCR
+// ================================
 $$("input[name='kind']").forEach(r =>
   r.addEventListener("change", async () => {
-    const kind = getSelectedKind();
+
+    //-----------------------------------
+    // ⭐ SAVE RADIO CHOICE IMMEDIATELY ⭐
+    //-----------------------------------
+    const kind = r.value;
+    const descVal = (kind === "WORK_ORDER") ? cleanPunc(descIn.value) : "";
+    files[idx].classify = { kind: kind, desc: descVal };
+
     descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
 
     if (kind === "WORK_ORDER") {
       const current = files[idx];
 
+      // Already extracted earlier?
       if (current.woExtracted != null) {
         descIn.value = current.woExtracted;
         ocrBadge.classList.remove("hidden");
         return;
       }
 
-      descIn.value = ""; // clear while scanning
+      descIn.value = "";  // clear UI while scanning
       const extracted = await ensureWorkOrderExtracted(current);
-      descIn.value = extracted || ""; // may be empty if no text
+      descIn.value = extracted || "";
       ocrBadge.classList.remove("hidden");
     }
   })
 );
 
-// =======================================
+
+
+// ================================
 // Navigation
-// =======================================
+// ================================
 prevBtn.addEventListener("click", async () => {
   if (idx === 0) return;
   idx--;
@@ -501,9 +542,11 @@ finishBtn.addEventListener("click", async () => {
   await buildAndDownload();
 });
 
-// =======================================
+
+
+// ================================
 // Validation
-// =======================================
+// ================================
 function validateCurrent() {
   errBox.classList.add("hidden");
 
@@ -522,16 +565,17 @@ function validateCurrent() {
       return false;
     }
   }
-
   return true;
 }
 
-// =======================================
-// Save classification
-// =======================================
+
+
+// ================================
+// Save choice (used by Next/Finish)
+// ================================
 function saveChoice() {
   const k = getSelectedKind();
-  const d = k === "WORK_ORDER" ? cleanPunc(descIn.value) : "";
+  const d = (k === "WORK_ORDER") ? cleanPunc(descIn.value) : "";
   files[idx].classify = { kind: k, desc: d };
 
   if (k === "MTW") {
@@ -544,9 +588,11 @@ function saveChoice() {
   }
 }
 
-// =======================================
-// Folder Routing (same rules)
-// =======================================
+
+
+// ================================
+// Folder Routing  (includes PERFECT DEEP/SPARKLE)
+// ================================
 function pickFolderByFilename(finalName) {
   const n = (finalName || "").toUpperCase();
 
@@ -560,57 +606,64 @@ function pickFolderByFilename(finalName) {
   }
 
   if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
-// Cleans + Clearouts (support new mapped names)
-if (
-    n.includes("CLEAN") ||
-    n.includes("PERFECT DEEP") ||
-    n.includes("PERFECT SPARKLE")
-) return "Cleans + Clearouts";
+
+  // CLEANS + CLEAROUTS — supports new mapped names
+  if (
+      n.includes("CLEAN") ||
+      n.includes("PERFECT DEEP") ||
+      n.includes("PERFECT SPARKLE")
+  ) return "Cleans + Clearouts";
+
   if (n.includes("EICR")) return "Periodic - Rewires";
   if (n.includes("EPC")) return "EPC";
   if (n.includes("ROT WORKS")) return "Rot Works";
   if (n.includes("RECHARGE")) return "Rechargeable Repairs";
   if (n.includes("AC GOLD MTW")) return "MTW";
-  if (n.includes("AC GOLD")) return "MTW";
+  if (n.includes("MTW AS PER VRR")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
 
   return ""; // default → ZIP root
 }
 
-// =======================================
-// Work Order Mapping Rules (filename substitutions)
-// =======================================
+
+
+// ================================
+// Work Order Mapping Rules
+// ================================
 function mapWorkOrderDescription(desc, contractorText) {
   const hay = `${desc || ""} ${contractorText || ""}`.trim();
 
-  // Contractor-led mappings (override description mappings)
+  // Contractor-led (highest priority)
   if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) {
     return "ASBESTOS REMOVAL";
   }
-  // Tolerant to "ENVIRONMENTAL" / "ENVIROMENTAL"
+
   if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
       fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) {
     return "ASBESTOS SURVEY";
   }
+
   if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) {
     return "RODGERS ISOLATOR";
   }
 
-  // Description-led mappings
+  // Description-led
   if (fuzzyIncludesPhrase(hay, "DEEP", 1)) {
     return "PERFECT DEEP";
   }
+
   if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) {
     return "PERFECT SPARKLE";
   }
 
-  // No mapping → use original description
-  return null;
+  return null; // no mapping → use original
 }
 
-// =======================================
-// ZIP generation (with new mapping rules)
-// =======================================
+
+
+// ================================
+// ZIP generation
+// ================================
 async function buildAndDownload() {
   const address = cleanPunc($("#address").value);
   const zip = new JSZip();
@@ -631,26 +684,30 @@ async function buildAndDownload() {
     if (!c || c.kind === "SKIP") {
       newName = `${address} - VOID.pdf`;
     } else {
+
       switch (c.kind) {
+
         case "CHECKLIST":
           newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
           break;
+
         case "MTW":
           mtwCount++;
           newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
           break;
+
         case "RECHARGE":
           newName = `${address} - VOID_RECHARGEABLE_Works.pdf`;
           break;
+
         case "BMD":
           bmdCount++;
           newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
           break;
 
         case "WORK_ORDER": {
-          // Apply mapping rules first (contractor overrides, then desc)
-          const contractorText = item.contractorExtracted || "";
-          const mapped = mapWorkOrderDescription(c.desc, contractorText);
+          const contractText = item.contractorExtracted || "";
+          const mapped = mapWorkOrderDescription(c.desc, contractText);
           const finalDesc = cleanPunc(mapped || c.desc);
           newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
           break;
