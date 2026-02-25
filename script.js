@@ -446,9 +446,6 @@ if (files[idx].classify && files[idx].classify.kind) {
 else if (idx === 0) {
     setSelectedKind("CHECKLIST");
 } 
-else {
-    setSelectedKind(null);
-}
 
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
   descIn.value = current?.desc || "";
