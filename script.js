@@ -4,16 +4,15 @@
 
 // ---- Crop settings (percentages of page) ----
 // These values target the cell under "DESCRIPTION OF WORKS REQUIRED"
-const CROP_TOP_PCT = 0.28;    // 28% down from page top  (Work Order description cell)
-const CROP_BOTTOM_PCT = 0.45; // 45% down from page top
+const CROP_TOP_PCT = 0.30;    // 28% down from page top  (Work Order description cell)
+const CROP_BOTTOM_PCT = 0.43; // 45% down from page top
 const CROP_LEFT_PCT = 0.05;   // 5% from left edge
 const CROP_RIGHT_PCT = 0.95;  // 95% (i.e., 5% from right edge)
 
 // New: fixed crop for CONTRACTOR/SUPPLIER row (just above the description cell)
 const CONTRACTOR_TOP_PCT = 0.22;     // tune if your scans differ
 const CONTRACTOR_BOTTOM_PCT = 0.28;  // sits immediately above the description band
-const CONTRACTOR_LEFT_PCT = CROP_LEFT_PCT;
-const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
+
 
 // =======================================
 // Utility helpers
