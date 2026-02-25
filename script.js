@@ -415,7 +415,12 @@ async function showCurrent() {
 
   const current = files[idx].classify;
 
-  setSelectedKind(current?.kind || null);
+// Auto-select "Inspection Checklist" ONLY on the first file (idx = 0)
+if (idx === 0 && !current?.kind) {
+    setSelectedKind("CHECKLIST");
+} else {
+    setSelectedKind(current?.kind || null);
+}
 
   // Ensure Work Order field visibility + content
   descWrap.classList.toggle("hidden", getSelectedKind() !== "WORK_ORDER");
