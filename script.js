@@ -443,9 +443,6 @@ async function showCurrent() {
       setSelectedKind(file.classify.kind);
   } else if (idx === 0) {
       setSelectedKind("CHECKLIST");
-  } else {
-      // Default for new pages
-      setSelectedKind("CHECKLIST");
   }
 
   const selectedKind = getSelectedKind();
