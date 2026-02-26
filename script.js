@@ -51,20 +51,31 @@ function uniquify(name, set) {
 /********************************************************
  * 1) EXTRACT TOP TEXT USING PDF.JS (NO OCR FOR FIRST PDF)
  ********************************************************/
-async function extractTopText(pdf, pageNumber, maxLines=5) {
+async function extractTopText(pdf, pageNumber, maxLines = 5) {
   const page = await pdf.getPage(pageNumber);
-  const textContent = await page.getTextContent();
+  const text = await page.getTextContent();
 
-  const lines = [];
-  for (const item of textContent.items) {
-    const txt = item.str.trim();
-    if (!txt) continue;
-    const y = item.transform[5];
-    lines.push({ text: txt.toUpperCase(), y });
-  }
+  // PDF coordinate system:
+  // transform[5] = Y coordinate
+  // lower Y = closer to top of page
+  const items = text.items.map(i => ({
+    text: i.str.toUpperCase(),
+    y: i.transform[5]  // y coordinate
+  }));
 
-  lines.sort((a,b)=> b.y - a.y); // highest y = top of page
-  return lines.slice(0, maxLines).map(l=>l.text).join(" ");
+  // Sort so top-of-page text comes first
+  items.sort((a, b) => a.y - b.y);
+
+  // Choose only items in the top 20% of the page
+  const pageHeight = page.view[3] - page.view[1];
+  const cutoffY = pageHeight * 0.20;
+
+  const topItems = items.filter(it => it.y <= cutoffY);
+
+  // Fall back to first N lines if nothing captured
+  const selected = topItems.length ? topItems : items.slice(0, maxLines);
+
+  return selected.map(i => i.text.trim()).join(" ");
 }
 
 
