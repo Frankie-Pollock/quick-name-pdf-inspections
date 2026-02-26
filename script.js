@@ -29,7 +29,10 @@ const $ = sel => document.querySelector(sel);
 
 function toUpper(s){ return (s || "").toUpperCase(); }
 function cleanPunc(s){
-  return toUpper(s).replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  return toUpper(s)
+    .replace(/[^A-Z0-9'\s]/g, " ")   // allow apostrophes
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // Preserve commas (for address) but make filename-safe and uppercase
