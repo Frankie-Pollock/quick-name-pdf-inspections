@@ -43,7 +43,7 @@ function toFilenameAddressKeepCommas(s) {
   s = s.replace(/[\\\/:\*\?"<>\|]+/g, " ");
 
   // Preserve commas; collapse other punctuation to spaces
-  s = s.replace(/[^A-Z0-9,\s]/g, " ");
+  s = s.replace(/[^A-Z0-9,'\s]/g, " ");
 
   // Collapse multiple spaces
   s = s.replace(/\s+/g, " ").trim();
