@@ -780,8 +780,14 @@ const srcDoc   = await PDFLib.PDFDocument.load(bytesForPdfLib);
 
   const total = pdfJsDoc.numPages;
 
-  const p1Text = await extractPageText(pdfJsDoc, 1);
-  const isAcGold = includesAny(p1Text, ["MULTI-TRADE WORKS"]);
+// Always load text from page 1
+const p1Text = await extractPageText(pdfJsDoc, 1);
+
+// FIX: allow hyphenated OR non-hyphenated version
+const isAcGold = includesAny(p1Text, [
+  "MULTI TRADE WORKS",
+  "MULTI-TRADE WORKS"
+]);
 
   const zip = new JSZip();
   const seenByFolder = new Map();
