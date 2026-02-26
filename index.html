@@ -2,128 +2,87 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>VOID PDF Renamer – OCR Classification Wizard</title>
+  <title>VOID PDF Processor</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: Arial, sans-serif; margin: 24px; }
-    h2 { margin: 0 0 12px; }
-    .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
-    .panel { border: 1px solid #aaa; border-radius: 8px; padding: 16px; }
-    .dropzone {
-      border: 3px dashed #777; border-radius: 10px;
-      padding: 40px; text-align: center; cursor: pointer; margin-top: 12px;
-      transition: opacity 0.2s ease;
+
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f7fa;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: #333;
     }
-    input[type="text"] {
-      width: 520px; max-width: 100%; padding: 10px; font-size: 16px;
+
+    .container {
+      text-align: center;
+      max-width: 600px;
+      padding: 20px;
     }
-    .preview { width: 420px; max-width: 95vw; }
-    .controls { min-width: 320px; }
-    .pdf-canvas {
-      width: 100%; background: #f5f5f5; border: 1px solid #ccc;
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      font-weight: 600;
+      color: #1f1f1f;
     }
-    .types { display: grid; gap: 6px; margin: 10px 0; }
-    .hint { color:#666; font-size: 0.9rem; margin-top: 6px; }
-    .actions { display:flex; gap:10px; margin-top: 10px; }
-    button { padding: 10px 16px; font-size: 14px; cursor: pointer; }
-    .muted { opacity: 0.6; }
-    .counter { font-family: monospace; }
-    .hidden { display:none; }
-    .error { color:#b00020; margin-top: 6px; }
-    .list { margin-top: 12px; font-size: 0.9rem; line-height: 1.4; }
-    .badge {
-      display:inline-block; padding:2px 6px; border-radius: 6px;
-      background:#eee; margin-left: 6px; font-size: 0.8rem;
+
+    p.subtitle {
+      margin: 0 0 28px;
+      font-size: 15px;
+      color: #555;
     }
-    .statusline {
-      display:flex; align-items:center; gap:8px; margin: 8px 0 10px;
+
+    /* Drag zone */
+    #dropzone {
+      border: 3px dashed #0078d4;
+      border-radius: 12px;
+      padding: 50px 30px;
+      background: #ffffff;
+      cursor: pointer;
+      font-size: 18px;
+      font-weight: 500;
+      color: #0078d4;
+      transition: 0.25s ease;
     }
-    .dot {
-      width:8px; height:8px; border-radius:50%;
-      background:#bbb; display:inline-block;
+
+    #dropzone:hover {
+      background: #eef6ff;
+      border-color: #005a9e;
     }
-    .dot.busy { background:#f0a500; }
-    .dot.ok { background:#2e7d32; }
-    .dot.err { background:#c62828; }
-    .monospace {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
-        "Liberation Mono", monospace;
+
+    #dropzone.dragging {
+      background: #e1f0ff;
+      border-color: #005a9e;
+    }
+
+    /* Hide old wizard completely */
+    #wizard {
+      display: none !important;
+      visibility: hidden !important;
+    }
+
+    /* Hide the unused address field */
+    #address {
+      display: none !important;
     }
   </style>
 </head>
+
 <body>
 
-<h2>VOID PDF Renamer – OCR Classification Wizard</h2>
+<div class="container">
+  <h1>VOID Pack & Work Order Processor</h1>
+  <p class="subtitle">Drop an Inspection Pack or Work Orders here — processing will run automatically.</p>
 
-<label for="address">Enter Address (exactly as folder name):</label><br/>
-<input id="address" type="text" placeholder="e.g. 12 EXAMPLE STREET" /><br/>
-
-<div id="dropzone" class="dropzone panel">
-  Drag a <strong>ZIP</strong> or <strong>one/multiple PDFs</strong> here.
-</div>
-
-<div id="wizard" class="row hidden" style="margin-top:16px;">
-  
-  <!-- LEFT: PDF Preview -->
-  <div class="panel preview">
-    <div>
-      <strong>Preview:</strong>
-      <span id="fileLabel">—</span>
-      <span id="ocrBadge" class="badge hidden">Auto-filled</span>
-    </div>
-
-    <canvas id="pdfCanvas" class="pdf-canvas" width="420" height="594"></canvas>
-    <div class="hint">Showing page 1 only.</div>
-
-    <div class="statusline">
-      <span id="ocrDot" class="dot" aria-hidden="true"></span>
-      <span id="ocrStatus" class="monospace">Idle</span>
-    </div>
-  </div>
-
-  <!-- RIGHT: Controls -->
-  <div class="panel controls">
-    
-    <div><strong>Step <span id="idx">0</span> of <span id="total">0</span></strong></div>
-    <div class="hint">
-      Select the document type. Work Orders can auto-fill the description using OCR.
-    </div>
-
-    <!-- ALWAYS VISIBLE -->
-    <div class="types">
-      <label><input type="radio" name="kind" value="CHECKLIST"> Inspection Checklist</label>
-      <label><input type="radio" name="kind" value="MTW"> AC GOLD MTW</label>
-      <label><input type="radio" name="kind" value="RECHARGE"> Rechargeable Works</label>
-      <label><input type="radio" name="kind" value="BMD"> BMD Works</label>
-      <label><input type="radio" name="kind" value="WORK_ORDER"> Work Order Request</label>
-
-      <!-- HIDDEN skip option (still referenced in script but not shown) -->
-      <label style="display:none;">
-        <input type="radio" name="kind" value="SKIP">
-      </label>
-    </div>
-
-    <!-- Work Order description box -->
-    <div id="descWrap" class="hidden">
-      <label for="desc">Work Order – Description of works required:</label><br/>
-      <input id="desc" type="text" placeholder="e.g. REPLACE KITCHEN TAPS" />
-      <div class="hint">Auto-filled from OCR if possible (UPPERCASE & cleanup).</div>
-    </div>
-
-    <div class="actions">
-      <button id="prevBtn" class="muted">◀ Back</button>
-      <button id="nextBtn">Next ▶</button>
-      <button id="finishBtn" class="hidden">Finish & Download ZIP</button>
-    </div>
-
-    <div class="list">
-      <div>MTW count so far: <span class="counter" id="mtwCount">0</span></div>
-      <div>BMD count so far: <span class="counter" id="bmdCount">0</span></div>
-    </div>
-
-    <div id="err" class="error hidden"></div>
-
+  <div id="dropzone">
+    Drag &amp; Drop PDF or ZIP Here
   </div>
 </div>
 
@@ -139,7 +98,11 @@
 
 <!-- Tesseract.js -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<!-- pdf-lib -->
 <script src="./pdf-lib.min.js"></script>
+
+<!-- Your final script.js (auto mode) -->
 <script src="./script.js"></script>
 
 </body>
