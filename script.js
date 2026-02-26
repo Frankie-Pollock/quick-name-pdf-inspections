@@ -1,6 +1,14 @@
 // =======================================
 // FINAL – Hands-free processing for Inspection Packs + Work Orders
 // =======================================
+//
+// Requires: pdf.js, pdf-lib, JSZip, Tesseract.js loaded before this script.
+// Dropzone element: an element with id="dropzone" to drop files onto.
+//
+// Outputs one ZIP named:  "<ADDRESS> - VOID RENAMED.zip"
+// with correctly named PDFs inside.
+//
+// =======================================
 
 // ---- Crop settings (percentages of page) ----
 const CROP_TOP_PCT = 0.30;
@@ -18,11 +26,30 @@ const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
 // Utility helpers
 // =======================================
 const $ = sel => document.querySelector(sel);
-const $$ = sel => Array.from(document.querySelectorAll(sel));
 
 function toUpper(s){ return (s || "").toUpperCase(); }
 function cleanPunc(s){
   return toUpper(s).replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// Preserve commas (for address) but make filename-safe and uppercase
+function toFilenameAddressKeepCommas(s) {
+  s = (s || "").toUpperCase().trim();
+
+  // Replace illegal filename characters: \ / : * ? " < > |
+  s = s.replace(/[\\\/:\*\?"<>\|]+/g, " ");
+
+  // Preserve commas; collapse other punctuation to spaces
+  s = s.replace(/[^A-Z0-9,\s]/g, " ");
+
+  // Collapse multiple spaces
+  s = s.replace(/\s+/g, " ").trim();
+
+  // Remove space before commas, ensure one space after
+  s = s.replace(/\s+,/g, ",").replace(/,(\S)/g, ", $1");
+
+  // Trim trailing spaces/commas just in case
+  return s.replace(/[,\s]+$/g, "").trim();
 }
 
 function uniquify(name, existing) {
@@ -270,7 +297,7 @@ function mapWorkOrderDescription(desc, contractorText) {
 }
 
 // ================================
-// Folder Routing  (includes PERFECT DEEP/SPARKLE)
+// Folder Routing
 // ================================
 function pickFolderByFilename(finalName) {
   const n = (finalName || "").toUpperCase();
@@ -305,6 +332,13 @@ async function extractPageText(pdfJsDoc, pageNum) {
   const text = textContent.items.map(i => (i.str || "")).join(" ");
   return cleanPunc(text);
 }
+// Raw (not cleaned) – needed for address extraction to preserve commas BEFORE final formatting
+async function extractPageTextRaw(pdfJsDoc, pageNum) {
+  const page = await pdfJsDoc.getPage(pageNum);
+  const textContent = await page.getTextContent();
+  return textContent.items.map(i => (i.str || "")).join(" ");
+}
+
 function looksBlankText(cleaned) {
   return !cleaned || cleaned.trim().length < 5;
 }
@@ -316,14 +350,61 @@ function includesAny(cleaned, arr) {
 // =======================================
 // Inspection Pack header detector
 // =======================================
-function isInspectionPackHeader(text) {
-  const t = toUpper(text || "");
+function isInspectionPackHeader(cleanedText) {
+  const t = toUpper(cleanedText || "");
   return (
     t.includes("INSPECTION CHECKLIST") ||
     t.includes("INTERNAL VOID PACK") ||
     t.includes("MULTI TRADE WORKS") ||   // cleaned (no hyphen)
-    t.includes("MULTI-TRADE WORKS")     // as printed
+    t.includes("MULTI-TRADE WORKS")     // as printed (safe)
   );
+}
+
+// =======================================
+// ADDRESS EXTRACTION (postcode removed, COMMAS PRESERVED)
+// Examples:
+//  "INTERNAL VOID PACK FOR 235 Carmuirs Avenue, Falkirk, FK1 4LD (..)" → "235 Carmuirs Avenue, Falkirk"
+//  "MULTI-TRADE WORKS: 40 Bridge Crescent, Denny, FK6 6PD"             → "40 Bridge Crescent, Denny"
+// =======================================
+function extractAddressFromHeader(text) {
+  if (!text) return "";
+
+  // Collapse whitespace but DO NOT touch punctuation (keep commas)
+  const header = String(text).replace(/\s+/g, " ").trim();
+
+  // UK postcode pattern (broad)
+  const postcodeRegex = /[A-Z]{1,2}[0-9][A-Z0-9]?\s*[0-9][A-Z]{2}/i;
+
+  let working = "";
+
+  // Internal Void Pack pattern "... PACK FOR <ADDRESS ... POSTCODE> (...)"
+  const idxFor = header.toUpperCase().indexOf("PACK FOR");
+  if (idxFor !== -1) {
+    working = header.slice(idxFor + "PACK FOR".length).trim();
+  }
+
+  // AC GOLD MTW pattern "… WORKS: <ADDRESS ... POSTCODE>"
+  if (!working) {
+    const idxWorks = header.toUpperCase().indexOf("WORKS:");
+    if (idxWorks !== -1) {
+      working = header.slice(idxWorks + "WORKS:".length).trim();
+    }
+  }
+
+  if (!working) return "";
+
+  // If a postcode is present, cut the string BEFORE the postcode
+  const m = working.match(postcodeRegex);
+  if (m) {
+    const pcStart = working.indexOf(m[0]);
+    working = working.slice(0, pcStart).trim();
+  }
+
+  // Remove trailing separators that may precede the postcode region
+  // BUT keep internal commas such as "CRESCENT, DENNY"
+  working = working.replace(/[,\-\:\s]+$/g, "").trim();
+
+  return working;
 }
 
 // ================================
@@ -341,7 +422,7 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   const mapped = mapWorkOrderDescription(rawDesc, contractorText);
   const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
 
-  // 2) Build target filename (same pattern you used previously)
+  // 2) Build target filename (same pattern previously)
   const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
   const folder = pickFolderByFilename(newName);
 
@@ -372,12 +453,12 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
 
   const total = pdfJsDoc.numPages;
 
-  // Read header text (page 1)
-  const p1Text = await extractPageText(pdfJsDoc, 1);
+  // Read header text (page 1) — cleaned for detection
+  const p1Clean = await extractPageText(pdfJsDoc, 1);
 
   const isAcGold =
-    includesAny(p1Text, ["MULTI TRADE WORKS"]) ||
-    includesAny(p1Text, ["MULTI-TRADE WORKS"]);
+    includesAny(p1Clean, ["MULTI TRADE WORKS"]) ||
+    includesAny(p1Clean, ["MULTI-TRADE WORKS"]);
 
   async function saveSinglePage(pageIndex1, filename) {
     const dest = await PDFLib.PDFDocument.create();
@@ -465,22 +546,13 @@ dropzone.addEventListener("drop", async e => {
   e.preventDefault();
   dropzone.style.opacity = 1;
 
-  const addressRaw = $("#address") ? $("#address").value : "";
-  const address = cleanPunc(addressRaw);
-  if (!address) {
-    alert("Please enter the ADDRESS first.");
-    return;
-  }
-
   let droppedFiles = Array.from(e.dataTransfer.files);
   if (!droppedFiles.length) {
     alert("No files dropped.");
     return;
   }
 
-  // -----------------------------
-  // If a ZIP was dropped, flatten it
-  // -----------------------------
+  // Flatten ZIP if one ZIP was dropped
   if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
     try {
       setProgress(0, 1, "Reading ZIP…");
@@ -511,23 +583,41 @@ dropzone.addEventListener("drop", async e => {
   }
 
   // -----------------------------
-  // First pass → identify which are inspection packs
+  // First pass → identify inspection packs + obtain ADDRESS
   // -----------------------------
   ensureProgressUI();
   setProgress(0, 100, "Analysing files…");
 
+  // Build plan + discover address by scanning for first inspection pack header
   const filePlans = [];
   let estimatedSteps = 0;
+  let address = "";
 
   for (const f of pdfFiles) {
     const bytes = await f.arrayBuffer();
     const doc = await getPdfJsDoc(bytes);
-    const p1 = await extractPageText(doc, 1);
-    const isPack = isInspectionPackHeader(p1);
+
+    // Page-1 text (both raw and cleaned)
+    const p1Raw   = await extractPageTextRaw(doc, 1);
+    const p1Clean = cleanPunc(p1Raw);
+
+    const isPack = isInspectionPackHeader(p1Clean);
     const pages = doc.numPages;
 
+    if (isPack && !address) {
+      // Extract address from raw page text → then format to filename (uppercase, commas kept, no postcode)
+      const extracted = extractAddressFromHeader(p1Raw);
+      address = toFilenameAddressKeepCommas(extracted);
+    }
+
     filePlans.push({ file: f, isPack, pages });
-    estimatedSteps += isPack ? pages : 1;
+    estimatedSteps += isPack ? pages : 1; // rough estimate
+  }
+
+  if (!address) {
+    alert("Could not auto-detect address from an Inspection Checklist header. Please include an inspection pack in the drop.");
+    finishProgress();
+    return;
   }
 
   // -----------------------------
@@ -561,12 +651,4 @@ dropzone.addEventListener("drop", async e => {
   a.click();
 
   finishProgress();
-});
-
-// =======================================================
-// OPTIONAL: Hide any existing wizard UI on load
-// =======================================================
-window.addEventListener("DOMContentLoaded", () => {
-  const wiz = document.getElementById("wizard");
-  if (wiz) wiz.style.display = "none";
 });
