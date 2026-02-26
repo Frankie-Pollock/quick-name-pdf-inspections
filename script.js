@@ -648,7 +648,7 @@ dropzone.addEventListener("drop", async e => {
   const outBlob = await outZip.generateAsync({ type: "blob" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(outBlob);
-  a.download = `${address} - VOID RENAMED.zip`;
+  a.download = `${address}.zip`;
   a.click();
 
   finishProgress();
