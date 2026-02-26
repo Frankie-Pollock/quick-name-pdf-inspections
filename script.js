@@ -767,9 +767,17 @@ function includesAny(cleaned, arr) {
 }
 
 async function splitAndDownloadBigPdf(bigPdfBlob, address) {
-  const srcBytes = await bigPdfBlob.arrayBuffer();
-  const pdfJsDoc = await getPdfJsDoc(srcBytes);
-  const srcDoc = await PDFLib.PDFDocument.load(srcBytes);
+// Read bytes once
+const originalBytes = await bigPdfBlob.arrayBuffer();
+
+// Create two independent copies
+const bytesForPdfJs  = originalBytes.slice(0);
+const bytesForPdfLib = originalBytes.slice(0);
+
+// Load separately
+const pdfJsDoc = await getPdfJsDoc(bytesForPdfJs);
+const srcDoc   = await PDFLib.PDFDocument.load(bytesForPdfLib);
+
   const total = pdfJsDoc.numPages;
 
   const p1Text = await extractPageText(pdfJsDoc, 1);
