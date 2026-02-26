@@ -1,603 +1,780 @@
-/*****************************************************
- *  VOID PDF RENAMER – v3 FULLY AUTOMATIC ENGINE
- *  ==============================================
- *  Features:
- *   ✔ Text-based classification for PAGE PDFs (pdf.js)
- *   ✔ OCR-based classification for scanned Work Orders
- *   ✔ Auto-split Inspection/MYW/BMD/Recharge
- *   ✔ Handles hybrid packs (Recharge + BMD)
- *   ✔ Handles AC GOLD MTW with BMD tail
- *   ✔ Skip blank pages
- *   ✔ Create individual PDFs
- *   ✔ Auto naming + folder routing
- *   ✔ ZIP output
- *
- *  Dependencies (must load BEFORE this script):
- *   - pdf.js (module)
- *   - jszip.min.js
- *   - tesseract.min.js
- *   - pdf-lib.min.js  <-- local copy
- *****************************************************/
+// =======================================
+// FAST WORKFLOW: Fixed-crop OCR only for Work Orders
+// =======================================
 
+// ---- Crop settings (percentages of page) ----
+// These values target the cells in your form layout.
 
-/********************************************************
- * 0) HELPER: CLEAN STRING
- ********************************************************/
-function ucClean(str) {
-  return (str || "")
-    .replace(/[^\w\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
+// Work Order description cell ("DESCRIPTION OF WORKS REQUIRED")
+const CROP_TOP_PCT = 0.30;
+const CROP_BOTTOM_PCT = 0.43;
+const CROP_LEFT_PCT = 0.05;
+const CROP_RIGHT_PCT = 0.95;
+
+// CONTRACTOR/SUPPLIER row (just above description cell)
+const CONTRACTOR_TOP_PCT = 0.18;
+const CONTRACTOR_BOTTOM_PCT = 0.255;
+const CONTRACTOR_LEFT_PCT = CROP_LEFT_PCT;
+const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
+
+// =======================================
+// Utility helpers
+// =======================================
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+const toUpper = s => (s || "").toUpperCase();
+const cleanPunc = s =>
+  toUpper(s).replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+
+function uniquify(name, existing) {
+  if (!existing.has(name)) {
+    existing.add(name);
+    return name;
+  }
+  const extIdx = name.lastIndexOf(".");
+  const base = extIdx >= 0 ? name.slice(0, extIdx) : name;
+  const ext = extIdx >= 0 ? name.slice(extIdx) : "";
+  let i = 2;
+  while (existing.has(`${base} (${i})${ext}`)) i++;
+  const unique = `${base} (${i})${ext}`;
+  existing.add(unique);
+  return unique;
 }
 
+// Natural sort for filenames (A2 before A10)
 function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function uniquify(name, set) {
-  if (!set.has(name)) { set.add(name); return name; }
-  const i = name.lastIndexOf(".");
-  const base = i >= 0 ? name.slice(0, i) : name;
-  const ext  = i >= 0 ? name.slice(i) : "";
-  let n = 2;
-  while (set.has(`${base} (${n})${ext}`)) n++;
-  const out = `${base} (${n})${ext}`;
-  set.add(out);
-  return out;
-}
-
-
-/********************************************************
- * 1) EXTRACT TOP TEXT USING PDF.JS (NO OCR FOR FIRST PDF)
- ********************************************************/
-async function extractTopText(pdf, pageNumber, maxLines = 5) {
-  const page = await pdf.getPage(pageNumber);
-  const text = await page.getTextContent();
-
-  // PDF coordinate system:
-  // transform[5] = Y coordinate
-  // lower Y = closer to top of page
-  const items = text.items.map(i => ({
-    text: i.str.toUpperCase(),
-    y: i.transform[5]  // y coordinate
-  }));
-
-  // Sort so top-of-page text comes first
-  items.sort((a, b) => a.y - b.y);
-
-  // Choose only items in the top 20% of the page
-  const pageHeight = page.view[3] - page.view[1];
-  const cutoffY = pageHeight * 0.20;
-
-  const topItems = items.filter(it => it.y <= cutoffY);
-
-  // Fall back to first N lines if nothing captured
-  const selected = topItems.length ? topItems : items.slice(0, maxLines);
-
-  return selected.map(i => i.text.trim()).join(" ");
-}
-
-
-/********************************************************
- * 2) RENDER + TEXT EXTRACTION FOR ALL PAGES
- ********************************************************/
-async function extractAllPagesWithText(blob) {
-  const buf = await blob.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-
-  const out = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 2 });
-
-    const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-
-    await page.render({
-      canvasContext: canvas.getContext("2d"),
-      viewport
-    }).promise;
-
-    const topText = ucClean(await extractTopText(pdf, pageNum));
-    out.push({ canvas, topText, pageNum });
-  }
-
-  return out;
-}
-
-
-/********************************************************
- * 3) BLANK PAGE DETECTION
- ********************************************************/
-function isBlankPage(canvas) {
-  const ctx = canvas.getContext("2d");
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-
-  let sum = 0, count = 0;
-  for (let i = 0; i < img.length; i += 4) {
-    const y = 0.299*img[i] + 0.587*img[i+1] + 0.114*img[i+2];
-    sum += y; count++;
-  }
-  const avg = sum / count;
-  return avg > 248; // nearly pure white
-}
-
-
-/********************************************************
- * 4) JOB TYPE DETECTION FOR FIRST PAGE
- ********************************************************/
-function detectJobType(text) {
-  if (text.includes("MULTI TRADE WORKS")) return "AC_GOLD_MTW";
-  if (text.includes("INTERNAL VOID PACK FOR")) return "INTERNAL_BMD";
-  return "UNKNOWN";
-}
-
-function isRechargeHeader(text) {
-  return (
-    text.includes("RECHARGE WORK") ||
-    text.includes("RECHARGEABLE WORK")
-  );
-}
-
-function isWorkHeader(text) {
-  return /\b[A-Z]+\s+WORK(S)?\b/.test(text);
-}
-
-function isBmdHeader(text) {
-  return text.includes("BMD WORKS REQUIRED");
-}
-
-
-/********************************************************
- * 5) CLASSIFY MULTI-PAGE PACK (FIRST PDF)
- ********************************************************/
-async function processMultiPagePdf(blob) {
-  const pages = await extractAllPagesWithText(blob);
-  const out = [];
-
-  // Page 1 ALWAYS Inspection Checklist
-  out.push({ nameType: "CHECKLIST", pages: [pages[0].canvas] });
-
-  const page1Type = detectJobType(pages[0].topText);
-
-  /******** INTERNAL BMD PACK ********/
-  if (page1Type === "INTERNAL_BMD") {
-    const page2 = pages[1];
-    let i = 1;
-
-    // 1) Check Recharge on Page 2
-    if (isRechargeHeader(page2.topText)) {
-      const recharge = [];
-
-      while (i < pages.length) {
-        const p = pages[i];
-        if (isBlankPage(p.canvas)) { i++; continue; }
-
-        if (i !== 1 && isWorkHeader(p.topText)) break;
-        recharge.push(p.canvas);
-        i++;
-      }
-
-      if (recharge.length)
-        out.push({ nameType: "RECHARGE", pages: recharge });
-
-      // Remaining pages → BMD
-      const bmd = [];
-      while (i < pages.length) {
-        const p = pages[i];
-        if (!isBlankPage(p.canvas)) bmd.push(p.canvas);
-        i++;
-      }
-
-      if (bmd.length)
-        out.push({ nameType: "BMD", pages: bmd });
-
-      return out;
-    }
-
-    // 2) No Recharge → All remaining pages = BMD
-    const bmd = [];
-    for (let j=1; j < pages.length; j++) {
-      const p = pages[j];
-      if (!isBlankPage(p.canvas)) bmd.push(p.canvas);
-    }
-
-    if (bmd.length)
-      out.push({ nameType: "BMD", pages: bmd });
-
-    return out;
-  }
-
-  /******** AC GOLD MTW ********/
-  if (page1Type === "AC_GOLD_MTW") {
-    const mtw = [];
-    const bmd = [];
-    let mode = "MTW";
-
-    for (let i=1; i < pages.length; i++) {
-      const p = pages[i];
-      if (isBlankPage(p.canvas)) continue;
-
-      const T = p.topText;
-
-      if (mode === "MTW") {
-        if (isBmdHeader(T)) {
-          mode = "BMD";
-          bmd.push(p.canvas);
-        } else {
-          mtw.push(p.canvas);
-        }
-      } else {
-        bmd.push(p.canvas);
-      }
-    }
-
-    if (mtw.length)
-      out.push({ nameType: "MTW", pages: mtw });
-
-    if (bmd.length)
-      out.push({ nameType: "BMD", pages: bmd });
-
-    return out;
-  }
-
-  /******** UNKNOWN TYPE → default to BMD ********/
-  const bmd = [];
-  for (let i=1; i < pages.length; i++) {
-    if (!isBlankPage(pages[i].canvas))
-      bmd.push(pages[i].canvas);
-  }
-  if (bmd.length)
-    out.push({ nameType: "BMD", pages: bmd });
-
-  return out;
-}
-
-
-/********************************************************
- * 6) EXPORT CANVAS-GROUPS → PDF BLOBS (PDF-LIB)
- ********************************************************/
-async function exportCanvasGroupToPdf(pages) {
-  const { PDFDocument } = PDFLib;
-
-  const pdfDoc = await PDFDocument.create();
-
-  for (const canvas of pages) {
-    const data = canvas.toDataURL("image/jpeg", 0.92);
-    const jpg = await pdfDoc.embedJpg(data);
-    const page = pdfDoc.addPage([canvas.width, canvas.height]);
-    page.drawImage(jpg, {x:0,y:0,width:canvas.width,height:canvas.height});
-  }
-
-  const bytes = await pdfDoc.save();
-  return new Blob([bytes], { type:"application/pdf" });
-}
-
-
-/********************************************************
- * 7) NAMING FOR FIRST-PDF OUTPUTS
- ********************************************************/
-function nameOutput(address, type, index=null) {
-  switch(type) {
-    case "CHECKLIST":
-      return `${address} - VOID INSPECTION CHECKLIST.pdf`;
-    case "MTW":
-      return `${address} - VOID AC GOLD MTW (${index}).pdf`;
-    case "BMD":
-      return `${address} - VOID BMD WORKS (${index}).pdf`;
-    case "RECHARGE":
-      return `${address} - VOID_RECHARGEABLE_Works.pdf`;
-  }
-  return `${address} - VOID.pdf`;
-}
-
-function pickOutputFolder(name) {
-  const N = name.toUpperCase();
-  if (N.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
-  if (N.includes("AC GOLD MTW")) return "MTW";
-  if (N.includes("RECHARGEABLE_WORKS")) return "Rechargeable Repairs";
-  if (N.includes("BMD WORKS")) return "NEC Lines";
-  return "";
-}
-
-async function buildOutput(address, groups) {
-  const out = [];
-  let mtwC=1, bmdC=1;
-
-  for (const g of groups) {
-    let index=null;
-    if (g.nameType==="MTW") index=mtwC++;
-    if (g.nameType==="BMD") index=bmdC++;
-
-    const name = nameOutput(address, g.nameType, index);
-    const folder = pickOutputFolder(name);
-    const blob = await exportCanvasGroupToPdf(g.pages);
-
-    out.push({ folder, filename:name, blob });
-  }
-
-  return out;
-}
-
-
-/********************************************************
- * 8) WORK ORDER OCR (using your v2 logic)
- ********************************************************/
-const CROP_L = 0.05, CROP_R = 0.95;
-const CROP_T = 0.30, CROP_B = 0.43;
-const C_T = 0.18, C_B = 0.255;
-
-function cropRegion(canvas, L,R,T,B) {
-  const W=canvas.width, H=canvas.height;
-  const x0=Math.round(W*L), x1=Math.round(W*R);
-  const y0=Math.round(H*T), y1=Math.round(H*B);
-  const w=x1-x0, h=y1-y0;
-
-  const out=document.createElement("canvas");
-  out.width=w; out.height=h;
-  out.getContext("2d").drawImage(canvas,x0,y0,w,h,0,0,w,h);
-  return out;
-}
-function cropDesc(cv){ return cropRegion(cv,CROP_L,CROP_R,CROP_T,CROP_B); }
-function cropContr(cv){ return cropRegion(cv,CROP_L,CROP_R,C_T,C_B); }
-
-/* OCR Enhance */
-function enh(cv){
-  const w=cv.width,h=cv.height;
-  const o=document.createElement("canvas");
-  o.width=w;o.height=h;
-  const c=o.getContext("2d");
-  c.drawImage(cv,0,0);
-  const img=c.getImageData(0,0,w,h);
-  const d=img.data;
-  const hist=new Array(256).fill(0);
-  for(let i=0;i<d.length;i+=4){
-    const y=(0.299*d[i]+0.587*d[i+1]+0.114*d[i+2])|0;
-    hist[y]++; d[i]=d[i+1]=d[i+2]=y;
-  }
-  const total=w*h, clip=Math.max(1,Math.round(total*0.01));
-  let lo=0, hi=255, acc=0;
-  for(let v=0;v<256;v++){ acc+=hist[v]; if(acc>clip){lo=v;break;} }
-  acc=0;
-  for(let v=255;v>=0;v--){ acc+=hist[v]; if(acc>clip){hi=v;break;} }
-  const range=Math.max(1,hi-lo);
-  for(let i=0;i<d.length;i+=4){
-    let y=d[i];
-    y=((y-lo)*255/range)|0;
-    if(y>170)y=Math.min(255,y+20);
-    d[i]=d[i+1]=d[i+2]=y;
-  }
-  c.putImageData(img,0,0);
-  return o;
-}
-
-async function ocrSingle(cv){
-  const e=enh(cv);
-  const r=await Tesseract.recognize(e,"eng",{
-    tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode:7
-  });
-  let L=r.data.text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  if(L.length) return ucClean(L[0]);
-
-  const r2=await Tesseract.recognize(e,"eng",{
-    tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode:6
-  });
-  L=r2.data.text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  return L.length?ucClean(L[0]):"";
-}
-
-function fuzzy(hay,needle,max=3){
-  hay=ucClean(hay); needle=ucClean(needle);
-  const h=hay.split(/\s+/), n=needle.split(/\s+/);
-  const win=n.length, J=n.join(" ");
-  for(let i=0;i<=h.length-win;i++){
-    const w=h.slice(i,i+win).join(" ");
-    if(lev(w,J)<=max) return true;
-  }
-  return false;
-}
-
-function lev(a,b){
-  const m=a.length,n=b.length;
-  const dp=Array.from({length:m+1},()=>new Array(n+1));
-  for(let i=0;i<=m;i++)dp[i][0]=i;
-  for(let j=0;j<=n;j++)dp[0][j]=j;
-  for(let i=1;i<=m;i++){
-    for(let j=1;j<=n;j++){
-      const cost=a[i-1]===b[j-1]?0:1;
-      dp[i][j]=Math.min(
-        dp[i-1][j]+1,
-        dp[i][j-1]+1,
-        dp[i-1][j-1]+cost
+// Simple Levenshtein distance (for fuzzy OCR matching)
+function levenshtein(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
       );
     }
   }
   return dp[m][n];
 }
 
-function mapWO(desc,contract){
-  const h=ucClean(desc+" "+contract);
-  if(fuzzy(h,"ASPECT CONTRACT",3))return"ASBESTOS REMOVAL";
-  if(fuzzy(h,"LIFE ENVIRONMENTAL",3)||fuzzy(h,"LIFE ENVIROMENTAL",4))return"ASBESTOS SURVEY";
-  if(fuzzy(h,"RODGERS ELECTRICAL",3))return"RODGERS ISOLATOR";
-  if(fuzzy(h,"DEEP",1))return"PERFECT DEEP";
-  if(fuzzy(h,"SPARKLE",2))return"PERFECT SPARKLE";
-  return null;
+function tokenize(str) {
+  return cleanPunc(str).split(/\s+/).filter(Boolean);
 }
 
-function pickWOfolder(name){
-  const N=name.toUpperCase();
-  const hasAsb=N.includes("ASBESTOS");
-  const hasContract=N.includes("LIFE")||N.includes("ASPECT");
-  const hasRS=N.includes("REMOVAL")||N.includes("SURVEY");
-  if(hasAsb||hasContract||(hasRS&&(hasAsb||hasContract)))
-    return"Asbestos";
+// Fuzzy phrase search: sliding token window, distance threshold
+function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
+  const hayTokens = tokenize(haystack);
+  const phraseTokens = tokenize(phrase);
+  if (!hayTokens.length || !phraseTokens.length) return false;
 
-  if(N.includes("INSPECTION CHECKLIST"))return"Inspection Checklist";
-  if(N.includes("CLEAN")||N.includes("PERFECT DEEP")||N.includes("PERFECT SPARKLE"))
-    return"Cleans + Clearouts";
-  if(N.includes("EICR"))return"Periodic - Rewires";
-  if(N.includes("EPC"))return"EPC";
-  if(N.includes("ROT WORKS"))return"Rot Works";
-  if(N.includes("RECHARGE"))return"Rechargeable Repairs";
-  if(N.includes("AC GOLD MTW"))return"MTW";
-  if(N.includes("BMD WORKS"))return"NEC Lines";
-  return"";
+  const windowSize = phraseTokens.length;
+  const target = phraseTokens.join(" ");
+  for (let i = 0; i <= hayTokens.length - windowSize; i++) {
+    const window = hayTokens.slice(i, i + windowSize).join(" ");
+    if (levenshtein(window, target) <= maxDist) return true;
+  }
+  return false;
 }
 
-async function extractWO(blob){
-  const buf=await blob.arrayBuffer();
-  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-  const page=await pdf.getPage(1);
-  const vp=page.getViewport({scale:2});
-  const cv=document.createElement("canvas");
-  cv.width=vp.width; cv.height=vp.height;
-  await page.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise;
+// =======================================
+// State
+// =======================================
+let files = [];      // [{ zipName, blob, classify?:{kind,desc}, woExtracted?:string, contractorExtracted?:string }]
+let idx = 0;
+let mtwN = 0;
+let bmdN = 0;
 
-  const cC=cropContr(cv);
-  const contr=await ocrSingle(cC);
+// =======================================
+// DOM references
+// =======================================
+const dropzone = $("#dropzone");
+const wizard = $("#wizard");
+const canvas = $("#pdfCanvas");
+const ctx = canvas.getContext("2d");
+const fileLabel = $("#fileLabel");
+const idxSpan = $("#idx");
+const totSpan = $("#total");
+const mtwSpan = $("#mtwCount");
+const bmdSpan = $("#bmdCount");
+const descWrap = $("#descWrap");
+const descIn = $("#desc");
+const errBox = $("#err");
+const prevBtn = $("#prevBtn");
+const nextBtn = $("#nextBtn");
+const finishBtn = $("#finishBtn");
 
-  if(fuzzy(contr,"ASPECT CONTRACT",3))
-    return{contr,desc:"ASBESTOS REMOVAL"};
-  if(fuzzy(contr,"LIFE ENVIRONMENTAL",3)||fuzzy(contr,"LIFE ENVIROMENTAL",4))
-    return{contr,desc:"ASBESTOS SURVEY"};
-  if(fuzzy(contr,"RODGERS ELECTRICAL",3))
-    return{contr,desc:"RODGERS ISOLATOR"};
+const ocrBadge = $("#ocrBadge");
+const ocrDot = $("#ocrDot");
+const ocrStatus = $("#ocrStatus");
 
-  const dC=cropDesc(cv);
-  const desc=await ocrSingle(dC);
+// =======================================
+// PDF rendering helpers
+// =======================================
+async function renderPdfPageToCanvas(blob, pageNum = 1, scale = 2.2) {
+  const buf = await blob.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  const page = await pdf.getPage(pageNum);
 
-  return{contr,desc};
+  const viewport = page.getViewport({ scale });
+  const c = document.createElement("canvas");
+  const cx = c.getContext("2d");
+  c.width = viewport.width;
+  c.height = viewport.height;
+  await page.render({ canvasContext: cx, viewport }).promise;
+  return c;
 }
 
-async function autoNameWO(address, blob){
-  const {contr,desc}=await extractWO(blob);
-  const mapped=mapWO(desc,contr);
-  const final=ucClean(mapped||desc||"WORK ORDER");
-  const name=`${address} - VOID ${final} WORK ORDER REQUEST.pdf`;
-  const folder=pickWOfolder(name);
-  return{folder, filename:name, blob};
+function cropRegion(pageCanvas, leftPct, rightPct, topPct, bottomPct) {
+  const W = pageCanvas.width;
+  const H = pageCanvas.height;
+
+  const x0 = Math.round(W * leftPct);
+  const x1 = Math.round(W * rightPct);
+  const y0 = Math.round(H * topPct);
+  const y1 = Math.round(H * bottomPct);
+
+  const w = Math.max(10, x1 - x0);
+  const h = Math.max(10, y1 - y0);
+
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const oc = out.getContext("2d");
+  oc.drawImage(pageCanvas, x0, y0, w, h, 0, 0, w, h);
+  return out;
 }
 
+function cropFixedDescRegion(pageCanvas) {
+  return cropRegion(pageCanvas, CROP_LEFT_PCT, CROP_RIGHT_PCT, CROP_TOP_PCT, CROP_BOTTOM_PCT);
+}
 
-/********************************************************
- * 9) ZIP BUILDER
- ********************************************************/
-async function buildZip(outFiles, address) {
-  const zip = new JSZip();
-  const seen = new Map();
+function cropFixedContractorRegion(pageCanvas) {
+  return cropRegion(pageCanvas, CONTRACTOR_LEFT_PCT, CONTRACTOR_RIGHT_PCT, CONTRACTOR_TOP_PCT, CONTRACTOR_BOTTOM_PCT);
+}
 
-  function setFor(folder){
-    if(!seen.has(folder)) seen.set(folder,new Set());
-    return seen.get(folder);
+// =======================================
+// Image enhancement for OCR (grayscale + auto-level + soft threshold push)
+// =======================================
+function enhanceForOcr(srcCanvas) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const dst = document.createElement("canvas");
+  dst.width = w;
+  dst.height = h;
+  const dctx = dst.getContext("2d");
+  dctx.drawImage(srcCanvas, 0, 0);
+
+  const img = dctx.getImageData(0, 0, w, h);
+  const data = img.data;
+
+  // Histogram on grayscale
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const y = (0.299 * r + 0.587 * g + 0.114 * b) | 0;
+    hist[y]++;
+    data[i] = data[i + 1] = data[i + 2] = y;
   }
 
-  for(const f of outFiles){
-    const folder=f.folder||"";
-    const s=setFor(folder);
-    const unique=uniquify(f.filename,s);
+  // Auto-levels using ~1% clip
+  const total = w * h;
+  const clip = Math.max(1, Math.round(total * 0.01));
+  let lo = 0, hi = 255, acc = 0;
 
-    const tgt = folder ? zip.folder(folder) : zip;
-    tgt.file(unique, f.blob);
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > clip) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > clip) { hi = v; break; } }
+
+  const range = Math.max(1, hi - lo);
+
+  for (let i = 0; i < data.length; i += 4) {
+    let y = data[i];
+    y = ((y - lo) * 255 / range);
+    y = Math.max(0, Math.min(255, y));
+    if (y > 170) y = Math.min(255, y + 20); // push highlights
+    data[i] = data[i + 1] = data[i + 2] = y;
   }
 
-  const blob=await zip.generateAsync({type:"blob"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download=`${address} - VOID RENAMED.zip`;
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  dctx.putImageData(img, 0, 0);
+  return dst;
 }
 
+// =======================================
+// OCR helpers
+// =======================================
 
-/********************************************************
- * 10) INPUT HANDLING + MAIN PIPELINE
- ********************************************************/
-async function explodeZip(file){
-  const zip=await JSZip.loadAsync(file);
-  const PDFs=[];
-  const items=Object.values(zip.files)
-    .filter(f=>!f.dir && f.name.toLowerCase().endsWith(".pdf"))
-    .sort((a,b)=>naturalSort(a.name,b.name));
+// OCR of a cropped region → first non-empty line (cleaned)
+async function ocrCroppedSingleLine(cropCanvas) {
+  const enhanced = enhanceForOcr(cropCanvas);
 
-  for(const e of items){
-    const blob = await zip.file(e.name).async("blob");
-    PDFs.push({name:e.name, blob});
+  // Strict pass: single line, uppercase whitelist
+  const res1 = await Tesseract.recognize(enhanced, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+    tessedit_pageseg_mode: 7 // single line
+  });
+
+  let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (lines.length) return cleanPunc(lines[0]);
+
+  // Fallback: treat as a small uniform block
+  const res2 = await Tesseract.recognize(enhanced, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+    tessedit_pageseg_mode: 6 // uniform block
+  });
+
+  lines = (res2?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  return lines.length ? cleanPunc(lines[0]) : "";
+}
+
+// OCR of contractor region → get whole cleaned text block
+async function ocrCroppedContractor(cropCanvas) {
+  const enhanced = enhanceForOcr(cropCanvas);
+  const res = await Tesseract.recognize(enhanced, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+    tessedit_pageseg_mode: 6
+  });
+  const text = cleanPunc(res?.data?.text || "");
+  return text;
+}
+
+// =======================================
+// Work Order extraction pipeline (Contractor-first override)
+// =======================================
+async function ensureWorkOrderExtracted(fileItem) {
+  // If already extracted, skip work
+  if (fileItem.woExtracted != null && fileItem.contractorExtracted != null) {
+    return fileItem.woExtracted;
   }
-  return PDFs;
+
+  ocrDot.className = "dot busy";
+  ocrStatus.textContent = "Scanning…";
+
+  try {
+    const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
+
+    // 1) FIRST: OCR the CONTRACTOR row (decides everything)
+    const contractorCrop = cropFixedContractorRegion(pageCanvas);
+    const contractor = await ocrCroppedContractor(contractorCrop);
+    fileItem.contractorExtracted = contractor || "";
+
+    // NORMALISE
+    const contractorNorm = cleanPunc(contractor);
+
+    // 2) CONTRACTOR SPECIAL CASES → SKIP description OCR and map directly
+    if (fuzzyIncludesPhrase(contractorNorm, "ASPECT CONTRACT", 3)) {
+      fileItem.woExtracted = "ASBESTOS REMOVAL";
+      ocrDot.className = "dot ok";
+      ocrStatus.textContent = "Contractor mapped";
+      return fileItem.woExtracted;
+    }
+
+    if (fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIRONMENTAL", 3) ||
+        fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIROMENTAL", 4)) {
+      fileItem.woExtracted = "ASBESTOS SURVEY";
+      ocrDot.className = "dot ok";
+      ocrStatus.textContent = "Contractor mapped";
+      return fileItem.woExtracted;
+    }
+
+    if (fuzzyIncludesPhrase(contractorNorm, "RODGERS ELECTRICAL", 3)) {
+      fileItem.woExtracted = "RODGERS ISOLATOR";
+      ocrDot.className = "dot ok";
+      ocrStatus.textContent = "Contractor mapped";
+      return fileItem.woExtracted;
+    }
+
+    // 3) If no contractor match → fall back to DESCRIPTION OCR
+    const descCrop = cropFixedDescRegion(pageCanvas);
+    const desc = await ocrCroppedSingleLine(descCrop);
+
+    fileItem.woExtracted = desc || "";
+    ocrDot.className = desc ? "dot ok" : "dot err";
+    ocrStatus.textContent = desc ? "OK" : "No text found";
+    return fileItem.woExtracted;
+
+  } catch (e) {
+    console.error("WO fixed-crop OCR failed", e);
+    ocrDot.className = "dot err";
+    ocrStatus.textContent = "OCR error";
+    fileItem.woExtracted = "";
+    fileItem.contractorExtracted = "";
+    return "";
+  }
 }
 
-async function normalizeInput(files){
-  if(files.length===1 && files[0].name.toLowerCase().endsWith(".zip"))
-    return explodeZip(files[0]);
+// ================================
+// DRAG & DROP (ZIP or multiple PDFs)
+// ================================
+dropzone.addEventListener("dragover", e => {
+  e.preventDefault();
+  dropzone.style.opacity = 0.85;
+});
 
-  if(files.every(f=>f.name.toLowerCase().endsWith(".pdf")))
-    return files.map(f=>({name:f.name,blob:f})).sort((a,b)=>naturalSort(a.name,b.name));
+dropzone.addEventListener("dragleave", () => {
+  dropzone.style.opacity = 1;
+});
 
-  throw new Error("Drop ZIP or PDFs only.");
-}
+dropzone.addEventListener("drop", async e => {
+  e.preventDefault();
+  dropzone.style.opacity = 1;
 
-async function processAll(addressRaw, droppedFiles){
-  const address=ucClean(addressRaw);
-  if(!address){
+  const address = cleanPunc($("#address").value);
+  if (!address) {
     alert("Please enter the ADDRESS first.");
     return;
   }
 
-  const pdfs = await normalizeInput(droppedFiles);
-  if(!pdfs.length){
-    alert("No PDFs found.");
+  const droppedFiles = Array.from(e.dataTransfer.files);
+  if (!droppedFiles.length) {
+    alert("No files dropped.");
     return;
   }
 
-  // First PDF = multi-page pack
-  const first = pdfs[0];
-  const workOrders = pdfs.slice(1);
+  files = [];
+  mtwN = 0;
+  bmdN = 0;
+  ocrDot.className = "dot";
+  ocrStatus.textContent = "Idle";
 
-  // 1) classify + split first PDF
-  const groups = await processMultiPagePdf(first.blob);
+  // CASE 1 — ZIP FILE
+  if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
+    try {
+      const zip = await JSZip.loadAsync(droppedFiles[0]);
 
-  // 2) export groups
-  const packOut = await buildOutput(address, groups);
+      const entries = Object.values(zip.files)
+        .filter(f => !f.dir && f.name.toLowerCase().endsWith(".pdf"))
+        .sort((a, b) => naturalSort(a.name, b.name));
 
-  // 3) process work orders
-  const woOut = [];
-  for(const wo of workOrders){
-    woOut.push(await autoNameWO(address, wo.blob));
+      if (!entries.length) {
+        alert("No PDF files found in the ZIP.");
+        return;
+      }
+
+      for (const entry of entries) {
+        const blob = await zip.file(entry.name).async("blob");
+        files.push({
+          zipName: entry.name,
+          blob,
+          classify: null,
+          woExtracted: null,
+          contractorExtracted: null
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to read ZIP.");
+      return;
+    }
   }
 
-  // 4) ZIP everything
-  await buildZip([...packOut, ...woOut], address);
+  // CASE 2 — MULTIPLE PDFs
+  else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
+    const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
+    for (const f of sorted) {
+      files.push({
+        zipName: f.name,
+        blob: f,
+        classify: null,
+        woExtracted: null,
+        contractorExtracted: null
+      });
+    }
+  }
+
+  else {
+    alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs (only PDFs)");
+    return;
+  }
+
+  // Start wizard
+  idx = 0;
+  wizard.classList.remove("hidden");
+  dropzone.classList.add("hidden");
+
+  totSpan.textContent = files.length;
+  mtwSpan.textContent = "0";
+  bmdSpan.textContent = "0";
+
+  await showCurrent();
+});
+
+
+
+// ================================
+// UI + Preview
+// ================================
+function getSelectedKind() {
+  const r = $$("input[name='kind']").find(x => x.checked);
+  return r ? r.value : null;
+}
+
+function setSelectedKind(kind) {
+  $$("input[name='kind']").forEach(x => x.checked = (x.value === kind));
+}
+
+async function showCurrent() {
+  errBox.classList.add("hidden");
+  ocrBadge.classList.add("hidden");
+  ocrDot.className = "dot";
+  ocrStatus.textContent = "Idle";
+
+  idxSpan.textContent = String(idx + 1);
+
+  prevBtn.classList.toggle("muted", idx === 0);
+  nextBtn.classList.toggle("hidden", idx >= files.length - 1);
+  finishBtn.classList.toggle("hidden", idx < files.length - 1);
+
+  const file = files[idx];
+
+  //---------------------------------------
+  // ⭐ RADIO RESTORE ⭐
+  //---------------------------------------
+  if (file.classify && file.classify.kind) {
+      setSelectedKind(file.classify.kind);
+  } else if (idx === 0) {
+      setSelectedKind("CHECKLIST");
+  }
+
+  const selectedKind = getSelectedKind();
+
+  //---------------------------------------
+  // Show/Hide description input
+  //---------------------------------------
+  descWrap.classList.toggle("hidden", selectedKind !== "WORK_ORDER");
+
+  //---------------------------------------
+  // ⭐ WORK ORDER AUTO-OCR ⭐
+  //---------------------------------------
+  if (selectedKind === "WORK_ORDER") {
+
+      // If OCR already done → restore text + badge
+      if (file.woExtracted != null) {
+          descIn.value = file.woExtracted;
+          ocrBadge.classList.remove("hidden");
+      }
+
+      // If not done → run OCR NOW
+      else {
+          ocrDot.className = "dot busy";
+          ocrStatus.textContent = "Scanning…";
+
+          descIn.value = "";
+
+          const extracted = await ensureWorkOrderExtracted(file);
+
+          descIn.value = extracted || "";
+          ocrBadge.classList.remove("hidden");
+
+          // Save classification object if needed
+          if (!file.classify) file.classify = {};
+
+          file.classify.kind = "WORK_ORDER";
+          file.classify.desc = cleanPunc(descIn.value);
+
+          // update badge colour
+          ocrDot.className = extracted ? "dot ok" : "dot err";
+          ocrStatus.textContent = extracted ? "OK" : "No text found";
+      }
+  }
+
+  //---------------------------------------
+  // Restore text for other pages
+  //---------------------------------------
+  if (selectedKind !== "WORK_ORDER") {
+      descIn.value = file.classify?.desc || "";
+  }
+
+  //---------------------------------------
+  // Render preview
+  //---------------------------------------
+  fileLabel.textContent = file.zipName;
+  await renderPreview(file.blob);
 }
 
 
-/********************************************************
- * 11) DRAG & DROP WIRING (for your HTML)
- ********************************************************/
-const dropzone=document.getElementById("dropzone");
-const addressInput=document.getElementById("address");
 
-dropzone.addEventListener("dragover", e=>{
-  e.preventDefault();
-  dropzone.style.opacity=0.7;
-});
-dropzone.addEventListener("dragleave", ()=>{
-  dropzone.style.opacity=1;
-});
-dropzone.addEventListener("drop", async e=>{
-  e.preventDefault();
-  dropzone.style.opacity=1;
 
-  const files=[...e.dataTransfer.files];
+async function renderPreview(blob) {
   try {
-    await processAll(addressInput.value, files);
-  } catch(err){
-    console.error(err);
-    alert(err.message||"Processing failed.");
+    const buf = await blob.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    const page = await pdf.getPage(1);
+
+    const desiredWidth = 420;
+    const initialViewport = page.getViewport({ scale: 1 });
+    const scale = desiredWidth / initialViewport.width;
+    const viewport = page.getViewport({ scale });
+
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+  } catch (err) {
+    console.warn("Preview failed", err);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
   }
+}
+
+    //-----------------------------------
+    // ⭐ SAVE RADIO CHOICE IMMEDIATELY ⭐
+    //-----------------------------------
+  $$("input[name='kind']").forEach(r =>
+  r.addEventListener("change", async () => {
+
+    const kind = r.value;
+
+    // --- SAVE IMMEDIATELY ---
+    if (kind === "WORK_ORDER") {
+      files[idx].classify = { kind: kind, desc: cleanPunc(descIn.value) };
+    } else {
+      files[idx].classify = { kind: kind, desc: "" };
+    }
+
+    // --- UI toggle ---
+    descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
+
+    // --- Work Order OCR ---
+    if (kind === "WORK_ORDER") {
+      const current = files[idx];
+
+      if (current.woExtracted != null) {
+        descIn.value = current.woExtracted;
+        ocrBadge.classList.remove("hidden");
+        return;
+      }
+
+      descIn.value = "";
+      const extracted = await ensureWorkOrderExtracted(current);
+      descIn.value = extracted || "";
+      ocrBadge.classList.remove("hidden");
+
+      // save again after OCR fills description
+      files[idx].classify.desc = cleanPunc(descIn.value);
+    }
+  })
+);
+
+
+
+// ================================
+// Navigation
+// ================================
+prevBtn.addEventListener("click", async () => {
+  if (idx === 0) return;
+  idx--;
+  await showCurrent();
 });
+
+nextBtn.addEventListener("click", async () => {
+  if (!validateCurrent()) return;
+  saveChoice();
+  idx++;
+  await showCurrent();
+});
+
+finishBtn.addEventListener("click", async () => {
+  if (!validateCurrent()) return;
+  saveChoice();
+  await buildAndDownload();
+});
+
+
+
+// ================================
+// Validation
+// ================================
+function validateCurrent() {
+  errBox.classList.add("hidden");
+
+  const k = getSelectedKind();
+  if (!k) {
+    errBox.textContent = "Please choose a type.";
+    errBox.classList.remove("hidden");
+    return false;
+  }
+
+  if (k === "WORK_ORDER") {
+    const d = cleanPunc(descIn.value);
+    if (!d) {
+      errBox.textContent = "Please enter the Work Order description.";
+      errBox.classList.remove("hidden");
+      return false;
+    }
+  }
+  return true;
+}
+
+
+
+// ================================
+// Save choice (used by Next/Finish)
+// ================================
+function saveChoice() {
+  const k = getSelectedKind();
+  const d = (k === "WORK_ORDER") ? cleanPunc(descIn.value) : "";
+  files[idx].classify = { kind: k, desc: d };
+
+  if (k === "MTW") {
+    mtwN++;
+    mtwSpan.textContent = String(mtwN);
+  }
+  if (k === "BMD") {
+    bmdN++;
+    bmdSpan.textContent = String(bmdN);
+  }
+}
+
+
+
+// ================================
+// Folder Routing  (includes PERFECT DEEP/SPARKLE)
+// ================================
+function pickFolderByFilename(finalName) {
+  const n = (finalName || "").toUpperCase();
+
+  // ASBESTOS group
+  const hasAsbestos = n.includes("ASBESTOS");
+  const hasContractor = n.includes("LIFE") || n.includes("ASPECT");
+  const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
+
+  if (hasAsbestos || hasContractor || (hasRemovalOrSurvey && (hasAsbestos || hasContractor))) {
+    return "Asbestos";
+  }
+
+  if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
+
+  // CLEANS + CLEAROUTS — supports new mapped names
+  if (
+      n.includes("CLEAN") ||
+      n.includes("PERFECT DEEP") ||
+      n.includes("PERFECT SPARKLE")
+  ) return "Cleans + Clearouts";
+
+  if (n.includes("EICR")) return "Periodic - Rewires";
+  if (n.includes("EPC")) return "EPC";
+  if (n.includes("ROT WORKS")) return "Rot Works";
+  if (n.includes("RECHARGE")) return "Rechargeable Repairs";
+  if (n.includes("AC GOLD MTW")) return "MTW";
+  if (n.includes("MTW AS PER VRR")) return "MTW";
+  if (n.includes("BMD WORKS")) return "NEC Lines";
+
+  return ""; // default → ZIP root
+}
+
+
+
+// ================================
+// Work Order Mapping Rules
+// ================================
+function mapWorkOrderDescription(desc, contractorText) {
+  const hay = `${desc || ""} ${contractorText || ""}`.trim();
+
+  // Contractor-led (highest priority)
+  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) {
+    return "ASBESTOS REMOVAL";
+  }
+
+  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
+      fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) {
+    return "ASBESTOS SURVEY";
+  }
+
+  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) {
+    return "RODGERS ISOLATOR";
+  }
+
+  // Description-led
+  if (fuzzyIncludesPhrase(hay, "DEEP", 1)) {
+    return "PERFECT DEEP";
+  }
+
+  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) {
+    return "PERFECT SPARKLE";
+  }
+
+  return null; // no mapping → use original
+}
+
+
+
+// ================================
+// ZIP generation
+// ================================
+async function buildAndDownload() {
+  const address = cleanPunc($("#address").value);
+  const zip = new JSZip();
+
+  const seenByFolder = new Map();
+  const seenSet = folder => {
+    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+    return seenByFolder.get(folder);
+  };
+
+  let mtwCount = 0;
+  let bmdCount = 0;
+
+  for (const item of files) {
+    const c = item.classify;
+    let newName = "";
+
+    if (!c || c.kind === "SKIP") {
+      newName = `${address} - VOID.pdf`;
+    } else {
+
+      switch (c.kind) {
+
+        case "CHECKLIST":
+          newName = `${address} - VOID INSPECTION CHECKLIST.pdf`;
+          break;
+
+        case "MTW":
+          mtwCount++;
+          newName = `${address} - VOID AC GOLD MTW (${mtwCount}).pdf`;
+          break;
+
+        case "RECHARGE":
+          newName = `${address} - VOID_RECHARGEABLE_Works.pdf`;
+          break;
+
+        case "BMD":
+          bmdCount++;
+          newName = `${address} - VOID BMD WORKS (${bmdCount}).pdf`;
+          break;
+
+        case "WORK_ORDER": {
+          const contractText = item.contractorExtracted || "";
+          const mapped = mapWorkOrderDescription(c.desc, contractText);
+          const finalDesc = cleanPunc(mapped || c.desc);
+          newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
+          break;
+        }
+      }
+    }
+
+    const folder = pickFolderByFilename(newName);
+    const set = seenSet(folder);
+    const finalName = uniquify(newName, set);
+
+    const target = folder ? zip.folder(folder) : zip;
+    target.file(finalName, item.blob);
+  }
+
+  const blob = await zip.generateAsync({ type: "blob" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${address} - VOID RENAMED.zip`;
+  a.click();
+}
