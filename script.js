@@ -8,7 +8,6 @@
 // Outputs one ZIP named:  "<ADDRESS> - VOID RENAMED.zip"
 // with correctly named PDFs inside.
 //
-// =======================================
 
 // ---- Crop settings (percentages of page) ----
 const CROP_TOP_PCT = 0.30;
