@@ -159,11 +159,17 @@ function cropFixedDescRegion(pageCanvas) {
 }
 
 function cropFixedContractorRegion(pageCanvas) {
-  return cropRegion(pageCanvas, CONTRACTOR_LEFT_PCT, CONTRACTOR_RIGHT_PCT, CONTRACTOR_TOP_PCT, CONTRACTOR_BOTTOM_PCT);
+  return cropRegion(
+    pageCanvas,
+    CONTRACTOR_LEFT_PCT,
+    CONTRACTOR_RIGHT_PCT,
+    CONTRACTOR_TOP_PCT,
+    CONTRACTOR_BOTTOM_PCT
+  );
 }
 
 // =======================================
-// Image enhancement for OCR (grayscale + auto-level + soft threshold push)
+// Image enhancement for OCR
 // =======================================
 function enhanceForOcr(srcCanvas) {
   const w = srcCanvas.width;
@@ -177,7 +183,6 @@ function enhanceForOcr(srcCanvas) {
   const img = dctx.getImageData(0, 0, w, h);
   const data = img.data;
 
-  // Histogram on grayscale
   const hist = new Array(256).fill(0);
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
@@ -186,7 +191,6 @@ function enhanceForOcr(srcCanvas) {
     data[i] = data[i + 1] = data[i + 2] = y;
   }
 
-  // Auto-levels using ~1% clip
   const total = w * h;
   const clip = Math.max(1, Math.round(total * 0.01));
   let lo = 0, hi = 255, acc = 0;
@@ -201,7 +205,7 @@ function enhanceForOcr(srcCanvas) {
     let y = data[i];
     y = ((y - lo) * 255 / range);
     y = Math.max(0, Math.min(255, y));
-    if (y > 170) y = Math.min(255, y + 20); // push highlights
+    if (y > 170) y = Math.min(255, y + 20);
     data[i] = data[i + 1] = data[i + 2] = y;
   }
 
@@ -217,41 +221,37 @@ function enhanceForOcr(srcCanvas) {
 async function ocrCroppedSingleLine(cropCanvas) {
   const enhanced = enhanceForOcr(cropCanvas);
 
-  // Strict pass: single line, uppercase whitelist
   const res1 = await Tesseract.recognize(enhanced, "eng", {
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 7 // single line
+    tessedit_pageseg_mode: 7
   });
 
   let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (lines.length) return cleanPunc(lines[0]);
 
-  // Fallback: treat as a small uniform block
   const res2 = await Tesseract.recognize(enhanced, "eng", {
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6 // uniform block
+    tessedit_pageseg_mode: 6
   });
 
   lines = (res2?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   return lines.length ? cleanPunc(lines[0]) : "";
 }
 
-// OCR of contractor region → get whole cleaned text block
+// OCR contractor region → entire cleaned block
 async function ocrCroppedContractor(cropCanvas) {
   const enhanced = enhanceForOcr(cropCanvas);
   const res = await Tesseract.recognize(enhanced, "eng", {
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
     tessedit_pageseg_mode: 6
   });
-  const text = cleanPunc(res?.data?.text || "");
-  return text;
+  return cleanPunc(res?.data?.text || "");
 }
 
 // =======================================
-// Work Order extraction pipeline (Contractor-first override)
+// Work Order extraction pipeline
 // =======================================
 async function ensureWorkOrderExtracted(fileItem) {
-  // If already extracted, skip work
   if (fileItem.woExtracted != null && fileItem.contractorExtracted != null) {
     return fileItem.woExtracted;
   }
@@ -262,15 +262,11 @@ async function ensureWorkOrderExtracted(fileItem) {
   try {
     const pageCanvas = await renderPdfPageToCanvas(fileItem.blob, 1, 2.2);
 
-    // 1) FIRST: OCR the CONTRACTOR row (decides everything)
     const contractorCrop = cropFixedContractorRegion(pageCanvas);
     const contractor = await ocrCroppedContractor(contractorCrop);
     fileItem.contractorExtracted = contractor || "";
-
-    // NORMALISE
     const contractorNorm = cleanPunc(contractor);
 
-    // 2) CONTRACTOR SPECIAL CASES → SKIP description OCR and map directly
     if (fuzzyIncludesPhrase(contractorNorm, "ASPECT CONTRACT", 3)) {
       fileItem.woExtracted = "ASBESTOS REMOVAL";
       ocrDot.className = "dot ok";
@@ -278,8 +274,10 @@ async function ensureWorkOrderExtracted(fileItem) {
       return fileItem.woExtracted;
     }
 
-    if (fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIRONMENTAL", 3) ||
-        fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIROMENTAL", 4)) {
+    if (
+      fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIRONMENTAL", 3) ||
+      fuzzyIncludesPhrase(contractorNorm, "LIFE ENVIROMENTAL", 4)
+    ) {
       fileItem.woExtracted = "ASBESTOS SURVEY";
       ocrDot.className = "dot ok";
       ocrStatus.textContent = "Contractor mapped";
@@ -293,7 +291,6 @@ async function ensureWorkOrderExtracted(fileItem) {
       return fileItem.woExtracted;
     }
 
-    // 3) If no contractor match → fall back to DESCRIPTION OCR
     const descCrop = cropFixedDescRegion(pageCanvas);
     const desc = await ocrCroppedSingleLine(descCrop);
 
@@ -311,9 +308,8 @@ async function ensureWorkOrderExtracted(fileItem) {
     return "";
   }
 }
-
 // ================================
-// DRAG & DROP (ZIP or multiple PDFs)
+// DRAG & DROP
 // ================================
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
@@ -340,13 +336,33 @@ dropzone.addEventListener("drop", async e => {
     return;
   }
 
+  // -------------------------------------------
+  // If EXACTLY ONE PDF → auto-split big pack
+  // -------------------------------------------
+  if (
+    droppedFiles.length === 1 &&
+    droppedFiles[0].name.toLowerCase().endsWith(".pdf")
+  ) {
+    try {
+      await splitAndDownloadBigPdf(droppedFiles[0], address);
+      return; // stop normal wizard flow
+    } catch (err) {
+      console.error(err);
+      alert("Failed to split PDF. Check console.");
+      return;
+    }
+  }
+
+  // -------------------------------------------
+  // Otherwise: normal wizard flow
+  // -------------------------------------------
   files = [];
   mtwN = 0;
   bmdN = 0;
   ocrDot.className = "dot";
   ocrStatus.textContent = "Idle";
 
-  // CASE 1 — ZIP FILE
+  // ZIP CASE
   if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
     try {
       const zip = await JSZip.loadAsync(droppedFiles[0]);
@@ -377,7 +393,7 @@ dropzone.addEventListener("drop", async e => {
     }
   }
 
-  // CASE 2 — MULTIPLE PDFs
+  // MULTIPLE PDFs CASE
   else if (droppedFiles.every(f => f.name.toLowerCase().endsWith(".pdf"))) {
     const sorted = droppedFiles.sort((a, b) => naturalSort(a.name, b.name));
     for (const f of sorted) {
@@ -392,7 +408,7 @@ dropzone.addEventListener("drop", async e => {
   }
 
   else {
-    alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs (only PDFs)");
+    alert("Please drop either:\n• A ZIP file\n• OR one/multiple PDFs");
     return;
   }
 
@@ -407,8 +423,6 @@ dropzone.addEventListener("drop", async e => {
 
   await showCurrent();
 });
-
-
 
 // ================================
 // UI + Preview
@@ -437,12 +451,12 @@ async function showCurrent() {
   const file = files[idx];
 
   //---------------------------------------
-  // ⭐ RADIO RESTORE ⭐
+  // Restore radio selection
   //---------------------------------------
   if (file.classify && file.classify.kind) {
-      setSelectedKind(file.classify.kind);
+    setSelectedKind(file.classify.kind);
   } else if (idx === 0) {
-      setSelectedKind("CHECKLIST");
+    setSelectedKind("CHECKLIST");
   }
 
   const selectedKind = getSelectedKind();
@@ -453,56 +467,44 @@ async function showCurrent() {
   descWrap.classList.toggle("hidden", selectedKind !== "WORK_ORDER");
 
   //---------------------------------------
-  // ⭐ WORK ORDER AUTO-OCR ⭐
+  // Work Order OCR
   //---------------------------------------
   if (selectedKind === "WORK_ORDER") {
+    if (file.woExtracted != null) {
+      descIn.value = file.woExtracted;
+      ocrBadge.classList.remove("hidden");
+    } else {
+      ocrDot.className = "dot busy";
+      ocrStatus.textContent = "Scanning…";
+      descIn.value = "";
 
-      // If OCR already done → restore text + badge
-      if (file.woExtracted != null) {
-          descIn.value = file.woExtracted;
-          ocrBadge.classList.remove("hidden");
-      }
+      const extracted = await ensureWorkOrderExtracted(file);
+      descIn.value = extracted || "";
+      ocrBadge.classList.remove("hidden");
 
-      // If not done → run OCR NOW
-      else {
-          ocrDot.className = "dot busy";
-          ocrStatus.textContent = "Scanning…";
+      if (!file.classify) file.classify = {};
 
-          descIn.value = "";
+      file.classify.kind = "WORK_ORDER";
+      file.classify.desc = cleanPunc(descIn.value);
 
-          const extracted = await ensureWorkOrderExtracted(file);
-
-          descIn.value = extracted || "";
-          ocrBadge.classList.remove("hidden");
-
-          // Save classification object if needed
-          if (!file.classify) file.classify = {};
-
-          file.classify.kind = "WORK_ORDER";
-          file.classify.desc = cleanPunc(descIn.value);
-
-          // update badge colour
-          ocrDot.className = extracted ? "dot ok" : "dot err";
-          ocrStatus.textContent = extracted ? "OK" : "No text found";
-      }
+      ocrDot.className = extracted ? "dot ok" : "dot err";
+      ocrStatus.textContent = extracted ? "OK" : "No text found";
+    }
   }
 
   //---------------------------------------
-  // Restore text for other pages
+  // Restore text for non Work Order
   //---------------------------------------
   if (selectedKind !== "WORK_ORDER") {
-      descIn.value = file.classify?.desc || "";
+    descIn.value = file.classify?.desc || "";
   }
 
   //---------------------------------------
-  // Render preview
+  // Preview render
   //---------------------------------------
   fileLabel.textContent = file.zipName;
   await renderPreview(file.blob);
 }
-
-
-
 
 async function renderPreview(blob) {
   try {
@@ -528,25 +530,21 @@ async function renderPreview(blob) {
   }
 }
 
-    //-----------------------------------
-    // ⭐ SAVE RADIO CHOICE IMMEDIATELY ⭐
-    //-----------------------------------
-  $$("input[name='kind']").forEach(r =>
+// ================================
+// SAVE RADIO CHOICE IMMEDIATELY
+// ================================
+$$("input[name='kind']").forEach(r =>
   r.addEventListener("change", async () => {
-
     const kind = r.value;
 
-    // --- SAVE IMMEDIATELY ---
     if (kind === "WORK_ORDER") {
       files[idx].classify = { kind: kind, desc: cleanPunc(descIn.value) };
     } else {
       files[idx].classify = { kind: kind, desc: "" };
     }
 
-    // --- UI toggle ---
     descWrap.classList.toggle("hidden", kind !== "WORK_ORDER");
 
-    // --- Work Order OCR ---
     if (kind === "WORK_ORDER") {
       const current = files[idx];
 
@@ -560,14 +558,10 @@ async function renderPreview(blob) {
       const extracted = await ensureWorkOrderExtracted(current);
       descIn.value = extracted || "";
       ocrBadge.classList.remove("hidden");
-
-      // save again after OCR fills description
       files[idx].classify.desc = cleanPunc(descIn.value);
     }
   })
 );
-
-
 
 // ================================
 // Navigation
@@ -590,8 +584,6 @@ finishBtn.addEventListener("click", async () => {
   saveChoice();
   await buildAndDownload();
 });
-
-
 
 // ================================
 // Validation
@@ -617,10 +609,8 @@ function validateCurrent() {
   return true;
 }
 
-
-
 // ================================
-// Save choice (used by Next/Finish)
+// Save choice
 // ================================
 function saveChoice() {
   const k = getSelectedKind();
@@ -637,30 +627,19 @@ function saveChoice() {
   }
 }
 
-
-
 // ================================
-// Folder Routing  (includes PERFECT DEEP/SPARKLE)
+// Folder Routing
 // ================================
 function pickFolderByFilename(finalName) {
   const n = (finalName || "").toUpperCase();
 
-  // ASBESTOS group
-  const hasAsbestos = n.includes("ASBESTOS");
-  const hasContractor = n.includes("LIFE") || n.includes("ASPECT");
-  const hasRemovalOrSurvey = n.includes("REMOVAL") || n.includes("SURVEY");
-
-  if (hasAsbestos || hasContractor || (hasRemovalOrSurvey && (hasAsbestos || hasContractor))) {
-    return "Asbestos";
-  }
-
+  if (n.includes("ASBESTOS")) return "Asbestos";
   if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
 
-  // CLEANS + CLEAROUTS — supports new mapped names
   if (
-      n.includes("CLEAN") ||
-      n.includes("PERFECT DEEP") ||
-      n.includes("PERFECT SPARKLE")
+    n.includes("CLEAN") ||
+    n.includes("PERFECT DEEP") ||
+    n.includes("PERFECT SPARKLE")
   ) return "Cleans + Clearouts";
 
   if (n.includes("EICR")) return "Periodic - Rewires";
@@ -671,10 +650,8 @@ function pickFolderByFilename(finalName) {
   if (n.includes("MTW AS PER VRR")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
 
-  return ""; // default → ZIP root
+  return "";
 }
-
-
 
 // ================================
 // Work Order Mapping Rules
@@ -682,33 +659,19 @@ function pickFolderByFilename(finalName) {
 function mapWorkOrderDescription(desc, contractorText) {
   const hay = `${desc || ""} ${contractorText || ""}`.trim();
 
-  // Contractor-led (highest priority)
-  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) {
-    return "ASBESTOS REMOVAL";
-  }
+  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) return "ASBESTOS REMOVAL";
+  if (
+    fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
+    fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)
+  ) return "ASBESTOS SURVEY";
 
-  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
-      fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) {
-    return "ASBESTOS SURVEY";
-  }
+  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) return "RODGERS ISOLATOR";
 
-  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) {
-    return "RODGERS ISOLATOR";
-  }
+  if (fuzzyIncludesPhrase(hay, "DEEP", 1)) return "PERFECT DEEP";
+  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) return "PERFECT SPARKLE";
 
-  // Description-led
-  if (fuzzyIncludesPhrase(hay, "DEEP", 1)) {
-    return "PERFECT DEEP";
-  }
-
-  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) {
-    return "PERFECT SPARKLE";
-  }
-
-  return null; // no mapping → use original
+  return null;
 }
-
-
 
 // ================================
 // ZIP generation
@@ -770,6 +733,117 @@ async function buildAndDownload() {
 
     const target = folder ? zip.folder(folder) : zip;
     target.file(finalName, item.blob);
+  }
+
+  const blob = await zip.generateAsync({ type: "blob" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${address} - VOID RENAMED.zip`;
+  a.click();
+}
+
+// =======================================
+// TEXT EXTRACTION + SPLIT ENGINE
+// =======================================
+async function getPdfJsDoc(blobOrBytes) {
+  const data = blobOrBytes instanceof Blob ? await blobOrBytes.arrayBuffer() : blobOrBytes;
+  return window.pdfjsLib.getDocument({ data }).promise;
+}
+
+async function extractPageText(pdfJsDoc, pageNum) {
+  const page = await pdfJsDoc.getPage(pageNum);
+  const textContent = await page.getTextContent();
+  const text = textContent.items.map(i => (i.str || "")).join(" ");
+  return cleanPunc(text);
+}
+
+function looksBlankText(cleaned) {
+  return !cleaned || cleaned.trim().length < 5;
+}
+
+function includesAny(cleaned, arr) {
+  const U = toUpper(cleaned);
+  return arr.some(s => U.includes(toUpper(s)));
+}
+
+async function splitAndDownloadBigPdf(bigPdfBlob, address) {
+  const srcBytes = await bigPdfBlob.arrayBuffer();
+  const pdfJsDoc = await getPdfJsDoc(srcBytes);
+  const srcDoc = await PDFLib.PDFDocument.load(srcBytes);
+  const total = pdfJsDoc.numPages;
+
+  const p1Text = await extractPageText(pdfJsDoc, 1);
+  const isAcGold = includesAny(p1Text, ["MULTI-TRADE WORKS"]);
+
+  const zip = new JSZip();
+  const seenByFolder = new Map();
+  const seenSet = folder => {
+    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+    return seenByFolder.get(folder);
+  };
+
+  async function saveSinglePage(pageIndex1, filename) {
+    const dest = await PDFLib.PDFDocument.create();
+    const [copied] = await dest.copyPages(srcDoc, [pageIndex1 - 1]);
+    dest.addPage(copied);
+    const bytes = await dest.save();
+
+    const folder = pickFolderByFilename(filename);
+    const set = seenSet(folder);
+    const finalName = uniquify(filename, set);
+
+    const target = folder ? zip.folder(folder) : zip;
+    target.file(finalName, bytes);
+  }
+
+  // Always save Page 1 as Inspection Checklist
+  await saveSinglePage(1, `${address} - VOID INSPECTION CHECKLIST.pdf`);
+
+  let mtwIdx = 0;
+  let bmdIdx = 0;
+
+  if (isAcGold) {
+    let lastText = "";
+    if (total >= 2) lastText = await extractPageText(pdfJsDoc, total);
+
+    const lastIsBmd = includesAny(lastText, ["BMD WORKS REQUIRED"]);
+    const mtwEnd = lastIsBmd ? total - 1 : total;
+
+    for (let p = 2; p <= mtwEnd; p++) {
+      const txt = await extractPageText(pdfJsDoc, p);
+      if (looksBlankText(txt)) continue;
+      mtwIdx++;
+      await saveSinglePage(p, `${address} - VOID AC GOLD MTW (${mtwIdx}).pdf`);
+    }
+
+    if (lastIsBmd) {
+      await saveSinglePage(total, `${address} - VOID BMD WORKS.pdf`);
+    }
+
+  } else {
+    let startBmdFrom = 2;
+
+    if (total >= 2) {
+      const p2Text = await extractPageText(pdfJsDoc, 2);
+      const p2Blank = looksBlankText(p2Text);
+      const p2Recharge = includesAny(p2Text, ["RECHARGE WORK", "RECHARGEABLE WORK"]);
+
+      if (!p2Blank && p2Recharge) {
+        await saveSinglePage(2, `${address} - VOID_RECHARGEABLE_Works.pdf`);
+        startBmdFrom = 3;
+      } else if (p2Blank) {
+        startBmdFrom = 3;
+      } else {
+        startBmdFrom = 2;
+      }
+    }
+
+    for (let p = startBmdFrom; p <= total; p++) {
+      const txt = await extractPageText(pdfJsDoc, p);
+      if (looksBlankText(txt)) continue;
+      bmdIdx++;
+      await saveSinglePage(p, `${address} - VOID BMD WORKS (${bmdIdx}).pdf`);
+    }
   }
 
   const blob = await zip.generateAsync({ type: "blob" });
