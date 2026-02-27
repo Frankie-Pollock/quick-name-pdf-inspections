@@ -39,7 +39,6 @@
       color: #555;
     }
 
-    /* Drag zone */
     #dropzone {
       border: 3px dashed #0078d4;
       border-radius: 12px;
@@ -62,13 +61,7 @@
       border-color: #005a9e;
     }
 
-    /* Hide old wizard completely */
-    #wizard {
-      display: none !important;
-      visibility: hidden !important;
-    }
-
-    /* Hide the unused address field */
+    #wizard,
     #address {
       display: none !important;
     }
@@ -79,14 +72,14 @@
 
 <div class="container">
   <h1>VOID Pack & Work Order Processor</h1>
-  <p class="subtitle">Drop an Inspection Pack or Work Orders here — processing will run automatically.</p>
+  <p class="subtitle">Drop an Inspection Pack or Work Orders — they will be queued. Press “Go” to process.</p>
 
   <div id="dropzone">
-    Drag &amp; Drop PDF or ZIP Here
+    Drag & Drop PDF or ZIP Here
   </div>
 </div>
 
-  <!-- Queue Controls -->
+<!-- Queue Controls -->
 <div id="queueControls" style="margin:12px 0; font-family:system-ui,Segoe UI,Arial,sans-serif">
   <input id="filePicker" type="file" multiple accept=".pdf,.zip" style="margin-right:8px" />
   <button id="processBtn" style="background:#0078d4;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-right:6px">Go</button>
@@ -94,28 +87,16 @@
   <div id="queueList" style="margin-top:10px;font-size:12px;color:#333"></div>
 </div>
 
-<!-- Existing Dropzone -->
-<div id="dropzone" style="border:2px dashed #aaa; padding:16px; border-radius:8px; text-align:center;">
-  Drop PDF(s) or ZIP here (they will be queued). Press “Go” to process.
-</div>
-
-<!-- PDF.js ES Module -->
+<!-- PDF.js -->
 <script type="module">
   import * as pdfjsLib from './pdf.mjs';
   window.pdfjsLib = pdfjsLib;
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
 </script>
 
-<!-- JSZip -->
 <script src="./jszip.min.js"></script>
-
-<!-- Tesseract.js -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-
-<!-- pdf-lib -->
 <script src="./pdf-lib.min.js"></script>
-
-<!-- Your final script.js (auto mode) -->
 <script src="./script.js"></script>
 
 </body>
