@@ -536,9 +536,8 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
 
 
 // =======================================
-// QUEUE STATE + HELPERS (NEW)
+// QUEUE STATE + HELPERS (UPDATED - NO FILE PICKER)
 // =======================================
-const filePicker = document.getElementById("filePicker");
 const processBtn = document.getElementById("processBtn");
 const clearBtn = document.getElementById("clearBtn");
 const queueList = document.getElementById("queueList");
@@ -556,7 +555,7 @@ function renderQueue() {
   const items = queuedFiles.map((f, idx) => {
     const sizeKB = Math.max(1, Math.round((f.size || 0) / 1024));
     return `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border:1px solid #e5e5e5;border-radius:6px;margin-bottom:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border:1px solid #e5e5e5;border-radius:6px;margin-bottom:6px;background:#fff">
         <div style="max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f.name}">
           ${idx + 1}. ${f.name} <span style="color:#999">(${sizeKB} KB)</span>
         </div>
@@ -577,7 +576,7 @@ function renderQueue() {
   });
 }
 
-// Add files (dedupe by name+size to avoid accidental duplicates)
+// Add files (dedupe by name+size+type to avoid accidental duplicates)
 function addToQueue(fileListOrArray) {
   const incoming = Array.from(fileListOrArray || []);
   const sig = f => `${f.name}::${f.size}::${f.type}`;
@@ -601,6 +600,12 @@ renderQueue();
 // =======================================
 // DRAG & DROP → Queue only (NO AUTO-RUN)  (UPDATED)
 // =======================================
+
+// Prevent default on document so browser doesn't open files on page
+["dragover", "drop"].forEach(evt => {
+  document.addEventListener(evt, e => e.preventDefault());
+});
+
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
   dropzone.style.opacity = 0.85;
@@ -617,17 +622,6 @@ dropzone.addEventListener("drop", e => {
 });
 
 // =======================================
-// FILE PICKER → Queue
-// =======================================
-filePicker.addEventListener("change", () => {
-  if (filePicker.files && filePicker.files.length) {
-    addToQueue(filePicker.files);
-    // Reset picker so same file can be re-selected later if needed
-    filePicker.value = "";
-  }
-});
-
-// =======================================
 // CLEAR QUEUE
 // =======================================
 clearBtn.addEventListener("click", () => {
@@ -636,11 +630,11 @@ clearBtn.addEventListener("click", () => {
 });
 
 // =======================================
-// PROCESS BUTTON → Run pipeline on queued files (NEW)
+// PROCESS BUTTON → Run pipeline on queued files (UPDATED TEXT)
 // =======================================
 processBtn.addEventListener("click", async () => {
   if (!queuedFiles.length) {
-    alert("Queue is empty. Drop PDF(s) or choose files first.");
+    alert("Queue is empty. Drop PDF(s) or ZIP(s) first.");
     return;
   }
   try {
@@ -764,4 +758,4 @@ async function processQueuedFiles() {
   a.click();
 
   finishProgress();
-});
+}
