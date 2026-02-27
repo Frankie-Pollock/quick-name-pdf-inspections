@@ -534,9 +534,73 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
   }
 }
 
-// =======================================================
-// DRAG & DROP → Fully Automatic Pipeline (NO WIZARD)
-// =======================================================
+
+// =======================================
+// QUEUE STATE + HELPERS (NEW)
+// =======================================
+const filePicker = document.getElementById("filePicker");
+const processBtn = document.getElementById("processBtn");
+const clearBtn = document.getElementById("clearBtn");
+const queueList = document.getElementById("queueList");
+
+// Keep a stable queue: Array<File>
+let queuedFiles = [];
+
+// Render current queue
+function renderQueue() {
+  if (!queueList) return;
+  if (!queuedFiles.length) {
+    queueList.innerHTML = `<div style="color:#666">Queue is empty.</div>`;
+    return;
+  }
+  const items = queuedFiles.map((f, idx) => {
+    const sizeKB = Math.max(1, Math.round((f.size || 0) / 1024));
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border:1px solid #e5e5e5;border-radius:6px;margin-bottom:6px">
+        <div style="max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f.name}">
+          ${idx + 1}. ${f.name} <span style="color:#999">(${sizeKB} KB)</span>
+        </div>
+        <button data-remove="${idx}" style="background:#eee;border:1px solid #ddd;color:#333;padding:3px 8px;border-radius:4px;cursor:pointer">Remove</button>
+      </div>`;
+  }).join("");
+  queueList.innerHTML = items;
+
+  // Hook remove buttons
+  queueList.querySelectorAll("button[data-remove]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.getAttribute("data-remove"), 10);
+      if (!Number.isNaN(idx)) {
+        queuedFiles.splice(idx, 1);
+        renderQueue();
+      }
+    });
+  });
+}
+
+// Add files (dedupe by name+size to avoid accidental duplicates)
+function addToQueue(fileListOrArray) {
+  const incoming = Array.from(fileListOrArray || []);
+  const sig = f => `${f.name}::${f.size}::${f.type}`;
+  const existing = new Set(queuedFiles.map(sig));
+  for (const f of incoming) {
+    // Only accept PDFs and ZIPs here
+    const lower = (f.name || "").toLowerCase();
+    if (!(lower.endsWith(".pdf") || lower.endsWith(".zip"))) continue;
+    const s = sig(f);
+    if (!existing.has(s)) {
+      queuedFiles.push(f);
+      existing.add(s);
+    }
+  }
+  renderQueue();
+}
+
+// Initial render
+renderQueue();
+
+// =======================================
+// DRAG & DROP → Queue only (NO AUTO-RUN)  (UPDATED)
+// =======================================
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
   dropzone.style.opacity = 0.85;
@@ -544,38 +608,84 @@ dropzone.addEventListener("dragover", e => {
 dropzone.addEventListener("dragleave", () => {
   dropzone.style.opacity = 1;
 });
-
-dropzone.addEventListener("drop", async e => {
+dropzone.addEventListener("drop", e => {
   e.preventDefault();
   dropzone.style.opacity = 1;
+  const dropped = Array.from(e.dataTransfer.files || []);
+  if (!dropped.length) return;
+  addToQueue(dropped);
+});
 
-  let droppedFiles = Array.from(e.dataTransfer.files);
-  if (!droppedFiles.length) {
-    alert("No files dropped.");
+// =======================================
+// FILE PICKER → Queue
+// =======================================
+filePicker.addEventListener("change", () => {
+  if (filePicker.files && filePicker.files.length) {
+    addToQueue(filePicker.files);
+    // Reset picker so same file can be re-selected later if needed
+    filePicker.value = "";
+  }
+});
+
+// =======================================
+// CLEAR QUEUE
+// =======================================
+clearBtn.addEventListener("click", () => {
+  queuedFiles = [];
+  renderQueue();
+});
+
+// =======================================
+// PROCESS BUTTON → Run pipeline on queued files (NEW)
+// =======================================
+processBtn.addEventListener("click", async () => {
+  if (!queuedFiles.length) {
+    alert("Queue is empty. Drop PDF(s) or choose files first.");
     return;
   }
+  try {
+    await processQueuedFiles();
+  } catch (err) {
+    console.error(err);
+    alert("An error occurred during processing.");
+  }
+});
 
-  // Flatten ZIP if one ZIP was dropped
-  if (droppedFiles.length === 1 && droppedFiles[0].name.toLowerCase().endsWith(".zip")) {
-    try {
-      setProgress(0, 1, "Reading ZIP…");
-      const zipIn = await JSZip.loadAsync(droppedFiles[0]);
-      const pdfEntries = Object.values(zipIn.files)
-        .filter(f => !f.dir && f.name.toLowerCase().endsWith(".pdf"))
-        .sort((a, b) => naturalSort(a.name, b.name));
+// =======================================
+// MAIN PIPELINE (refactored from old drop handler)
+// Accepts queuedFiles, flattens ZIPs, then runs your existing logic
+// =======================================
+async function processQueuedFiles() {
+  // Clone queue at start to avoid mutation during process
+  let droppedFiles = Array.from(queuedFiles);
 
-      const extracted = [];
-      for (const entry of pdfEntries) {
-        const blob = await zipIn.file(entry.name).async("blob");
-        extracted.push(new File([blob], entry.name, { type: "application/pdf" }));
+  // Flatten any ZIPs into PDFs
+  if (droppedFiles.length) {
+    const flattened = [];
+    for (const f of droppedFiles) {
+      const lower = (f.name || "").toLowerCase();
+      if (lower.endsWith(".zip")) {
+        try {
+          setProgress(0, 1, `Reading ZIP: ${f.name}…`);
+          const zipIn = await JSZip.loadAsync(f);
+          const pdfEntries = Object.values(zipIn.files)
+            .filter(ff => !ff.dir && ff.name.toLowerCase().endsWith(".pdf"))
+            .sort((a, b) => naturalSort(a.name, b.name));
+          for (const entry of pdfEntries) {
+            const blob = await zipIn.file(entry.name).async("blob");
+            flattened.push(new File([blob], entry.name, { type: "application/pdf" }));
+          }
+        } catch (err) {
+          console.error(err);
+          alert(`ZIP could not be read: ${f.name}`);
+          finishProgress();
+          return;
+        }
+      } else {
+        flattened.push(f);
       }
-      droppedFiles = extracted;
-    } catch (err) {
-      console.error(err);
-      alert("ZIP could not be read.");
-      finishProgress();
-      return;
     }
+    droppedFiles = flattened;
   }
 
   // Filter to PDFs
