@@ -2,7 +2,7 @@
 // FAST WORKFLOW: Fixed-crop OCR only for Work Orders
 // =======================================
 
-// ---- Crop settings (percentages of page) ----
+// ---- Crop settings (percentages of page) ---- 
 // These values target the cells in your form layout.
 
 // Work Order description cell ("DESCRIPTION OF WORKS REQUIRED")
