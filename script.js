@@ -1,4 +1,9 @@
-// =======================================
+
+//Copyright © 2024–2026 Francis Pollock
+//All rights reserved.
+//This software is owned exclusively by the author, Francis Pollock.
+
+  // =======================================
 // FINAL – Hands-free processing for Inspection Packs + Work Orders
 // =======================================
 //
