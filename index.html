@@ -4,100 +4,78 @@
   <meta charset="UTF-8" />
   <title>VOID PDF Processor</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-
   <style>
     :root { color-scheme: light dark; }
-
     body {
       font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background: #f5f7fa;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      color: #333;
+      margin: 0; padding: 0; background: #f5f7fa;
+      display: flex; justify-content: center; align-items: center; height: 100vh; color: #333;
     }
+    .container { text-align: center; max-width: 700px; padding: 20px; }
+    h1 { margin: 0 0 12px; font-size: 28px; font-weight: 600; color: #1f1f1f; }
+    p.subtitle { margin: 0 0 18px; font-size: 15px; color: #555; }
 
-    .container {
-      text-align: center;
-      max-width: 600px;
-      padding: 20px;
-    }
-
-    h1 {
-      margin: 0 0 12px;
-      font-size: 28px;
-      font-weight: 600;
-      color: #1f1f1f;
-    }
-
-    p.subtitle {
-      margin: 0 0 28px;
-      font-size: 15px;
-      color: #555;
-    }
-
+    /* Dropzone */
     #dropzone {
-      border: 3px dashed #0078d4;
-      border-radius: 12px;
-      padding: 50px 30px;
-      background: #ffffff;
-      cursor: pointer;
-      font-size: 18px;
-      font-weight: 500;
-      color: #0078d4;
-      transition: 0.25s ease;
+      border: 3px dashed #0078d4; border-radius: 12px; padding: 40px 24px;
+      background: #ffffff; cursor: pointer; font-size: 18px; font-weight: 500;
+      color: #0078d4; transition: 0.25s ease; user-select: none;
     }
+    #dropzone:hover { background: #eef6ff; border-color: #005a9e; }
+    #dropzone.dragging { background: #e1f0ff; border-color: #005a9e; }
 
-    #dropzone:hover {
-      background: #eef6ff;
-      border-color: #005a9e;
+    /* Queue controls */
+    #queueControls { margin-top: 14px; }
+    #processBtn {
+      background:#0078d4; color:#fff; border:none; padding:8px 14px; border-radius:6px;
+      cursor:pointer; margin-right:8px; font-weight:600;
     }
-
-    #dropzone.dragging {
-      background: #e1f0ff;
-      border-color: #005a9e;
+    #clearBtn {
+      background:#ccc; color:#000; border:none; padding:8px 14px; border-radius:6px; cursor:pointer;
     }
-
-    #wizard,
-    #address {
-      display: none !important;
+    #queueList { margin-top: 10px; font-size: 13px; text-align: left; }
+    .queue-item {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:6px 10px; border:1px solid #e5e5e5; border-radius:6px; margin-bottom:6px; background:#fff;
     }
+    .queue-name { max-width:75%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .rm-btn { background:#eee; border:1px solid #ddd; color:#333; padding:3px 8px; border-radius:4px; cursor:pointer; }
   </style>
 </head>
 
 <body>
+  <div class="container">
+    <h1>VOID Pack & Work Order Processor</h1>
+    <p class="subtitle">Drag PDFs/ZIPs into the box to build a queue. Press <strong>Go</strong> when ready.</p>
 
-<div class="container">
-  <h1>VOID Pack & Work Order Processor</h1>
-  <p class="subtitle">Drop an Inspection Pack or Work Orders — they will be queued. Press “Go” to process.</p>
+    <!-- SINGLE dropzone -->
+    <div id="dropzone">Drag & Drop PDF or ZIP Here</div>
 
-  <div id="dropzone">
-    Drag & Drop PDF or ZIP Here
+    <!-- Queue controls (no file picker) -->
+    <div id="queueControls">
+      <button id="processBtn">Go</button>
+      <button id="clearBtn">Clear</button>
+      <div id="queueList"></div>
+    </div>
   </div>
-</div>
 
-<!-- Queue Controls -->
-<div id="queueControls" style="margin:12px 0; font-family:system-ui,Segoe UI,Arial,sans-serif">
-  <input id="filePicker" type="file" multiple accept=".pdf,.zip" style="margin-right:8px" />
-  <button id="processBtn" style="background:#0078d4;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-right:6px">Go</button>
-  <button id="clearBtn" style="background:#ccc;color:#000;border:none;padding:6px 12px;border-radius:4px;cursor:pointer">Clear</button>
-  <div id="queueList" style="margin-top:10px;font-size:12px;color:#333"></div>
-</div>
+  <!-- PDF.js ES Module -->
+  <script type="module">
+    import * as pdfjsLib from './pdf.mjs';
+    window.pdfjsLib = pdfjsLib;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
+  </script>
 
-<!-- PDF.js -->
-<script type="module">
-  import * as pdfjsLib from './pdf.mjs';
-  window.pdfjsLib = pdfjsLib;
-  pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
-</script>
+  <!-- JSZip -->
+  <script src="./jszip.min.js"></script>
 
-<script src="./jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script src="./pdf-lib.min.js"></script>
-<script src="./script.js"></script>
+  <!-- Tesseract.js -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
+  <!-- pdf-lib -->
+  <script src="./pdf-lib.min.js"></script>
+
+  <!-- Your main logic (the big script you already have) -->
+  <script src="./script.js"></script>
 </body>
 </html>
