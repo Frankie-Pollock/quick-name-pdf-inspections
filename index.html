@@ -29,13 +29,11 @@
       margin: 0 0 12px;
       font-size: 28px;
       font-weight: 600;
-      color: inherit;
     }
 
     p.subtitle {
       margin: 0 0 18px;
       font-size: 15px;
-      color: inherit;
     }
 
     /* Dropzone */
@@ -62,7 +60,6 @@
       border-color: #005a9e;
     }
 
-    /* Queue controls */
     #queueControls { margin-top: 14px; }
 
     #processBtn {
@@ -118,14 +115,14 @@
       cursor:pointer;
     }
 
-    /* ─────────────────────────────────────────────── */
-    /* DARK/LIGHT TOGGLE SWITCH                        */
-    /* ─────────────────────────────────────────────── */
+    /* --------------------------------------------------------------------- */
+    /* DARK/LIGHT MODE SWITCH — FIXED POSITION (Option 1: 40px offset)       */
+    /* --------------------------------------------------------------------- */
 
     .theme-switch {
       position: fixed;
-      top: 16px;
-      left: 16px;
+      top: 40px;
+      left: 40px;
       width: 56px;
       height: 28px;
       display: inline-block;
@@ -168,20 +165,22 @@
     }
 
     .theme-switch .icon.moon { left: 8px; opacity: 1; }
-    .theme-switch .icon.sun { right: 8px; opacity: 0; }
+    .theme-switch .icon.sun  { right: 8px; opacity: 0; }
 
     .theme-switch input:checked + .slider {
       background: #4a8fff;
     }
+
     .theme-switch input:checked + .slider::before {
       transform: translateX(28px);
     }
-    .theme-switch input:checked + .slider .icon.moon { opacity: 0; }
-    .theme-switch input:checked + .slider .icon.sun { opacity: 1; }
 
-    /* ─────────────────────────────────────────────── */
-    /* DARK MODE OVERRIDES                             */
-    /* ─────────────────────────────────────────────── */
+    .theme-switch input:checked + .slider .icon.moon { opacity: 0; }
+    .theme-switch input:checked + .slider .icon.sun  { opacity: 1; }
+
+    /* --------------------------------------------------------------------- */
+    /* DARK MODE OVERRIDES                                                   */
+    /* --------------------------------------------------------------------- */
 
     html.dark body {
       background: #1e1e1e;
@@ -209,14 +208,14 @@
       color: #fff;
     }
 
-    /* ─────────────────────────────────────────────── */
-    /* POWERMAN ANDY MODE TOGGLE                       */
-    /* ─────────────────────────────────────────────── */
+    /* --------------------------------------------------------------------- */
+    /* POWERMAN ANDY MODE TOGGLE                                             */
+    /* --------------------------------------------------------------------- */
 
     .andy-switch {
       position: fixed;
-      top: 16px;
-      right: 16px;
+      top: 40px;
+      right: 40px;
       width: 50px;
       height: 28px;
       display: inline-block;
@@ -244,9 +243,9 @@
       background: #ffa600;
     }
 
-    /* ─────────────────────────────────────────────── */
-    /* POWERMAN ANDY MODE BACKGROUND                   */
-    /* ─────────────────────────────────────────────── */
+    /* --------------------------------------------------------------------- */
+    /* POWERMAN ANDY BACKGROUND MODE                                         */
+    /* --------------------------------------------------------------------- */
 
     html.powerman-andy {
       background: #111 !important;
@@ -285,7 +284,7 @@
 <body>
 
   <!-- 🌙/☀️ Dark Mode Switch -->
-  <label class="theme-switch" title="Toggle dark mode">
+  <label class="theme-switch">
     <input type="checkbox" id="modeToggle">
     <span class="slider">
       <span class="icon moon">🌙</span>
@@ -293,8 +292,8 @@
     </span>
   </label>
 
-  <!-- ⚡ Powerman Andy Switch -->
-  <label class="andy-switch" title="Toggle Powerman Andy Mode">
+  <!-- ⚡ Powerman Andy Toggle -->
+  <label class="andy-switch">
     <input type="checkbox" id="andyToggle">
     <span class="slider-andy">⚡</span>
   </label>
@@ -312,7 +311,7 @@
     </div>
   </div>
 
-  <!-- PDF.js -->
+  <!-- JS libs -->
   <script type="module">
     import * as pdfjsLib from './pdf.mjs';
     window.pdfjsLib = pdfjsLib;
@@ -324,11 +323,11 @@
   <script src="./pdf-lib.min.js"></script>
   <script src="./script.js"></script>
 
-  <!-- Theme + Powerman Andy Logic -->
+  <!-- Theme Mode Logic -->
   <script>
     const root = document.documentElement;
 
-    /* ---------------- DARK MODE ---------------- */
+    /* DARK MODE */
     const modeToggle = document.getElementById("modeToggle");
     const savedTheme = localStorage.getItem("theme");
 
@@ -338,12 +337,12 @@
     }
 
     modeToggle.addEventListener("change", () => {
-      const enabled = modeToggle.checked;
-      root.classList.toggle("dark", enabled);
-      localStorage.setItem("theme", enabled ? "dark" : "light");
+      const on = modeToggle.checked;
+      root.classList.toggle("dark", on);
+      localStorage.setItem("theme", on ? "dark" : "light");
     });
 
-    /* --------------- POWERMAN ANDY MODE --------------- */
+    /* POWERMAN ANDY MODE */
     const andyToggle = document.getElementById("andyToggle");
     const savedAndy = localStorage.getItem("powerman-andy");
 
@@ -353,9 +352,9 @@
     }
 
     andyToggle.addEventListener("change", () => {
-      const enabled = andyToggle.checked;
-      root.classList.toggle("powerman-andy", enabled);
-      localStorage.setItem("powerman-andy", enabled ? "on" : "off");
+      const on = andyToggle.checked;
+      root.classList.toggle("powerman-andy", on);
+      localStorage.setItem("powerman-andy", on ? "on" : "off");
     });
   </script>
 
