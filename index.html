@@ -25,17 +25,6 @@
       z-index: 5;
     }
 
-    h1 {
-      margin: 0 0 12px;
-      font-size: 28px;
-      font-weight: 600;
-    }
-
-    p.subtitle {
-      margin: 0 0 18px;
-      font-size: 15px;
-    }
-
     #dropzone {
       border: 3px dashed #0078d4;
       border-radius: 12px;
@@ -46,168 +35,57 @@
       font-weight: 500;
       color: #0078d4;
       transition: 0.25s ease;
-      user-select: none;
     }
 
-    #dropzone:hover {
-      background: #eef6ff;
-      border-color: #005a9e;
-    }
+    #dropzone:hover { background: #eef6ff; }
 
-    #queueControls { margin-top: 14px; }
-
-    #processBtn {
-      background:#0078d4;
-      color:#fff;
-      border:none;
-      padding:8px 14px;
-      border-radius:6px;
-      cursor:pointer;
-      margin-right:8px;
-      font-weight:600;
-    }
-
-    #clearBtn {
-      background:#ccc;
-      color:#000;
-      border:none;
-      padding:8px 14px;
-      border-radius:6px;
-      cursor:pointer;
-    }
-
-    #queueList {
-      margin-top: 10px;
-      font-size: 13px;
-      text-align: left;
-    }
-
-    .queue-item {
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:6px 10px;
-      border:1px solid #e5e5e5;
-      border-radius:6px;
-      margin-bottom:6px;
-      background:#fff;
-    }
-
-    /* ------------------------------------------------------------------ */
-    /* FIXED, PERFECT DARK/LIGHT SWITCH                                  */
-    /* ------------------------------------------------------------------ */
-
-    .theme-switch {
+    /* ------------------------------------------------------------ */
+    /* TEXT-ONLY DARK MODE TOGGLE BUTTON                            */
+    /* ------------------------------------------------------------ */
+    #themeButton {
       position: fixed;
       top: 40px;
       left: 40px;
-      width: 56px;
-      height: 28px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 2px solid #0078d4;
+      background: white;
+      color: #0078d4;
+      font-weight: 600;
+      cursor: pointer;
       z-index: 9999;
     }
 
-    .theme-switch input {
-      display: none;
+    html.dark #themeButton {
+      background: #0078d4;
+      color: white;
+      border-color: #005a9e;
     }
 
-    .theme-switch .slider {
-      background: #ccc;
-      border-radius: 34px;
-      width: 100%;
-      height: 100%;
-      position: relative;
-      cursor: pointer;
-      transition: background 0.25s ease;
-    }
-
-    .theme-switch .slider::before {
-      content: "";
-      position: absolute;
-      width: 24px;
-      height: 24px;
-      left: 2px;
-      top: 2px;
-      background: white;
-      border-radius: 50%;
-      transition: transform 0.25s ease;
-      z-index: 3;
-    }
-
-    .theme-switch .icon {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      font-size: 15px;
-      pointer-events: none;
-      transition: opacity 0.25s ease;
-    }
-
-    .theme-switch .icon.moon {
-      left: 8px;
-      opacity: 1; /* Light mode: moon visible */
-    }
-
-    .theme-switch .icon.sun {
-      right: 8px;
-      opacity: 0; /* Light mode: sun hidden */
-    }
-
-    /* DARK MODE STATE */
-    .theme-switch input:checked + .slider {
-      background: #4a8fff;
-    }
-
-    .theme-switch input:checked + .slider::before {
-      transform: translateX(28px);
-    }
-
-    .theme-switch input:checked + .slider .icon.moon {
-      opacity: 0;
-    }
-
-    .theme-switch input:checked + .slider .icon.sun {
-      opacity: 1;
-    }
-
-    /* Dark mode app UI */
-    html.dark body {
-      background: #1e1e1e;
-      color: #e0e0e0;
-    }
-
-
-    /* ------------------------------------------------------------------ */
-    /* POWERMAN ANDY MODE                                                */
-    /* ------------------------------------------------------------------ */
-
-    .andy-switch {
+    /* ------------------------------------------------------------ */
+    /* POWERMAN ANDY MODE BUTTON                                    */
+    /* ------------------------------------------------------------ */
+    #andyButton {
       position: fixed;
       top: 40px;
       right: 40px;
-      width: 50px;
-      height: 28px;
-      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 2px solid #ffa600;
+      background: #fff6da;
+      font-weight: 700;
+      cursor: pointer;
       z-index: 9999;
     }
 
-    .andy-switch input { display: none; }
-
-    .slider-andy {
-      background: #ffcf33;
-      border-radius: 34px;
-      width: 100%;
-      height: 100%;
-      display:flex;
-      justify-content:center;
-      align-items:center;
-      cursor:pointer;
-      transition: background 0.25s ease;
-    }
-
-    .andy-switch input:checked + .slider-andy {
+    #andyButton.active {
       background: #ffa600;
+      color: white;
     }
 
+    /* ------------------------------------------------------------ */
+    /* POWERMAN ANDY BACKGROUND MODE                                */
+    /* ------------------------------------------------------------ */
     html.powerman-andy body {
       background-image:
         url("image.png"),
@@ -221,37 +99,29 @@
     }
 
     html.powerman-andy body::before {
-      content: "I LOVE POWER · SCOTTISH POWER NO.1 FAN · WHEN I AM BORED AT THE WEEKENDS I CALL SCOTTISH POWER · ";
+      content: "I LOVE POWER • SCOTTISH POWER NO.1 FAN • WHEN I AM BORED AT THE WEEKENDS I CALL SCOTTISH POWER • ";
       position: fixed;
       inset: 0;
       z-index: 3;
       font-size: 38px;
       font-weight: 900;
-      color: rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.08);
       writing-mode: vertical-rl;
       text-orientation: upright;
       pointer-events:none;
     }
 
+    html.dark body { background: #1e1e1e; color: #e0e0e0; }
   </style>
 </head>
 
 <body>
 
-  <!-- DARK MODE SWITCH -->
-  <label class="theme-switch">
-    <input type="checkbox" id="modeToggle">
-    <span class="slider">
-      <span class="icon moon">🌙</span>
-      <span class="icon sun">☀️</span>
-    </span>
-  </label>
+  <!-- TEXT-TOGGLE DARK MODE BUTTON -->
+  <button id="themeButton">DARK MODE</button>
 
-  <!-- POWERMAN ANDY MODE SWITCH -->
-  <label class="andy-switch">
-    <input type="checkbox" id="andyToggle">
-    <span class="slider-andy">⚡</span>
-  </label>
+  <!-- TEXT-TOGGLE POWERMAN ANDY BUTTON -->
+  <button id="andyButton">POWERMAN ANDY</button>
 
   <div class="container">
     <h1>VOID Pack & Work Order Processor</h1>
@@ -266,7 +136,7 @@
     </div>
   </div>
 
-  <!-- Libraries -->
+  <!-- JS libs -->
   <script type="module">
     import * as pdfjsLib from './pdf.mjs';
     window.pdfjsLib = pdfjsLib;
@@ -278,32 +148,34 @@
   <script src="./pdf-lib.min.js"></script>
   <script src="./script.js"></script>
 
-  <!-- MODE LOGIC -->
+  <!-- Theme Logic -->
   <script>
     const root = document.documentElement;
+    const themeButton = document.getElementById("themeButton");
+    const andyButton  = document.getElementById("andyButton");
 
-    /* Dark Mode */
-    const modeToggle = document.getElementById("modeToggle");
+    /* ------------ DARK MODE ------------- */
     if (localStorage.getItem("theme") === "dark") {
       root.classList.add("dark");
-      modeToggle.checked = true;
+      themeButton.textContent = "LIGHT MODE";
     }
-    modeToggle.addEventListener("change", () => {
-      const on = modeToggle.checked;
-      root.classList.toggle("dark", on);
-      localStorage.setItem("theme", on ? "dark" : "light");
+
+    themeButton.addEventListener("click", () => {
+      const isDark = root.classList.toggle("dark");
+      themeButton.textContent = isDark ? "LIGHT MODE" : "DARK MODE";
+      localStorage.setItem("theme", isDark ? "dark" : "light");
     });
 
-    /* Powerman Andy Mode */
-    const andyToggle = document.getElementById("andyToggle");
+    /* ------------ POWERMAN ANDY MODE ------------- */
     if (localStorage.getItem("powerman-andy") === "on") {
       root.classList.add("powerman-andy");
-      andyToggle.checked = true;
+      andyButton.classList.add("active");
     }
-    andyToggle.addEventListener("change", () => {
-      const on = andyToggle.checked;
-      root.classList.toggle("powerman-andy", on);
-      localStorage.setItem("powerman-andy", on ? "on" : "off");
+
+    andyButton.addEventListener("click", () => {
+      const isOn = root.classList.toggle("powerman-andy");
+      andyButton.classList.toggle("active", isOn);
+      localStorage.setItem("powerman-andy", isOn ? "on" : "off");
     });
   </script>
 
