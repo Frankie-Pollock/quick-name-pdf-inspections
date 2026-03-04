@@ -36,7 +36,6 @@
       font-size: 15px;
     }
 
-    /* Dropzone */
     #dropzone {
       border: 3px dashed #0078d4;
       border-radius: 12px;
@@ -52,11 +51,6 @@
 
     #dropzone:hover {
       background: #eef6ff;
-      border-color: #005a9e;
-    }
-
-    #dropzone.dragging {
-      background: #e1f0ff;
       border-color: #005a9e;
     }
 
@@ -99,135 +93,92 @@
       background:#fff;
     }
 
-    .queue-name {
-      max-width:75%;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      white-space:nowrap;
+    /* ------------------------------------------------------------------ */
+    /* FIXED, PERFECT DARK/LIGHT SWITCH                                  */
+    /* ------------------------------------------------------------------ */
+
+    .theme-switch {
+      position: fixed;
+      top: 40px;
+      left: 40px;
+      width: 56px;
+      height: 28px;
+      z-index: 9999;
     }
 
-    .rm-btn {
-      background:#eee;
-      border:1px solid #ddd;
-      color:#333;
-      padding:3px 8px;
-      border-radius:4px;
-      cursor:pointer;
+    .theme-switch input {
+      display: none;
     }
 
-   /* DARK/LIGHT SWITCH — Fixed alignment + correct icon order */
-.theme-switch {
-  position: fixed;
-  top: 40px;
-  left: 40px;
-  width: 56px;
-  height: 28px;
-  display: inline-block;
-  z-index: 9999;
-}
+    .theme-switch .slider {
+      background: #ccc;
+      border-radius: 34px;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.25s ease;
+    }
 
-.theme-switch input {
-  display: none;
-}
+    .theme-switch .slider::before {
+      content: "";
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      left: 2px;
+      top: 2px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.25s ease;
+      z-index: 3;
+    }
 
-.theme-switch .slider {
-  background: #ddd;
-  border-radius: 34px;
-  position: relative;
-  cursor: pointer;
-  transition: background 0.3s ease;
-  width: 100%;
-  height: 100%;
-}
+    .theme-switch .icon {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 15px;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
 
-.theme-switch .slider::before {
-  content: "";
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  left: 2px;
-  bottom: 2px;
-  background: white;
-  border-radius: 50%;
-  transition: transform 0.3s ease;
-}
+    .theme-switch .icon.moon {
+      left: 8px;
+      opacity: 1; /* Light mode: moon visible */
+    }
 
-/* ICONS */
-.theme-switch .icon {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
-  font-size: 15px;
-  transition: opacity 0.25s ease;
-}
+    .theme-switch .icon.sun {
+      right: 8px;
+      opacity: 0; /* Light mode: sun hidden */
+    }
 
-/* moon on left, sun on right */
-.theme-switch .icon.moon {
-  left: 8px;
-  opacity: 1;       /* visible in LIGHT mode */
-}
+    /* DARK MODE STATE */
+    .theme-switch input:checked + .slider {
+      background: #4a8fff;
+    }
 
-.theme-switch .icon.sun {
-  right: 8px;
-  opacity: 0;       /* hidden in LIGHT mode */
-}
+    .theme-switch input:checked + .slider::before {
+      transform: translateX(28px);
+    }
 
-/* ------ DARK MODE SWITCHED ON ------ */
+    .theme-switch input:checked + .slider .icon.moon {
+      opacity: 0;
+    }
 
-/* knob slides to the right */
-.theme-switch input:checked + .slider::before {
-  transform: translateX(28px);
-}
+    .theme-switch input:checked + .slider .icon.sun {
+      opacity: 1;
+    }
 
-/* slider background */
-.theme-switch input:checked + .slider {
-  background: #4a8fff;
-}
-
-/* show SUN in DARK MODE */
-.theme-switch input:checked + .slider .icon.sun {
-  opacity: 1;
-}
-
-/* hide MOON in DARK MODE */
-.theme-switch input:checked + .slider .icon.moon {
-  opacity: 0;
-}
-
-    /* --------------------------------------------------------------------- */
-    /* DARK MODE OVERRIDES                                                   */
-    /* --------------------------------------------------------------------- */
-
+    /* Dark mode app UI */
     html.dark body {
       background: #1e1e1e;
       color: #e0e0e0;
     }
 
-    html.dark #dropzone {
-      background: #2a2a2a;
-      color: #66aaff;
-      border-color: #66aaff;
-    }
 
-    html.dark #dropzone:hover {
-      background: #333;
-      border-color: #99c4ff;
-    }
-
-    html.dark .queue-item {
-      background: #2a2a2a;
-      border-color: #444;
-    }
-
-    html.dark #clearBtn {
-      background: #444;
-      color: #fff;
-    }
-
-    /* --------------------------------------------------------------------- */
-    /* POWERMAN ANDY MODE TOGGLE                                             */
-    /* --------------------------------------------------------------------- */
+    /* ------------------------------------------------------------------ */
+    /* POWERMAN ANDY MODE                                                */
+    /* ------------------------------------------------------------------ */
 
     .andy-switch {
       position: fixed;
@@ -244,30 +195,17 @@
     .slider-andy {
       background: #ffcf33;
       border-radius: 34px;
-      position: relative;
-      cursor: pointer;
       width: 100%;
       height: 100%;
-      font-size: 18px;
       display:flex;
       justify-content:center;
       align-items:center;
-      transition: background 0.3s ease;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.2) inset;
+      cursor:pointer;
+      transition: background 0.25s ease;
     }
 
     .andy-switch input:checked + .slider-andy {
       background: #ffa600;
-    }
-
-    /* --------------------------------------------------------------------- */
-    /* POWERMAN ANDY BACKGROUND MODE                                         */
-    /* --------------------------------------------------------------------- */
-
-    html.powerman-andy {
-      background: #111 !important;
-      color: #fff !important;
-      overflow: auto;
     }
 
     html.powerman-andy body {
@@ -275,32 +213,32 @@
         url("image.png"),
         url("image.png"),
         url("image.png");
-
       background-size: 250px;
       background-repeat: repeat;
       background-position: 0 0, 125px 125px, 250px 250px;
-      position: relative;
+      color: #fff !important;
+      overflow: auto;
     }
 
     html.powerman-andy body::before {
-      content: "I LOVE POWER · SCOTTISH POWER NO.1 FAN · WHEN I AM BORED AT THE WEEKENDS I CALL SCOTTISH POWER · I LOVE POWER · SCOTTISH POWER NO.1 FAN · WHEN I AM BORED AT THE WEEKENDS I CALL SCOTTISH POWER ";
+      content: "I LOVE POWER · SCOTTISH POWER NO.1 FAN · WHEN I AM BORED AT THE WEEKENDS I CALL SCOTTISH POWER · ";
       position: fixed;
       inset: 0;
-      z-index: 2;
+      z-index: 3;
       font-size: 38px;
       font-weight: 900;
-      color: rgba(255,255,255,0.07);
-      line-height: 1.4;
+      color: rgba(255,255,255,0.1);
       writing-mode: vertical-rl;
       text-orientation: upright;
-      pointer-events: none;
+      pointer-events:none;
     }
+
   </style>
 </head>
 
 <body>
 
-  <!-- 🌙/☀️ Dark Mode Switch -->
+  <!-- DARK MODE SWITCH -->
   <label class="theme-switch">
     <input type="checkbox" id="modeToggle">
     <span class="slider">
@@ -309,7 +247,7 @@
     </span>
   </label>
 
-  <!-- ⚡ Powerman Andy Toggle -->
+  <!-- POWERMAN ANDY MODE SWITCH -->
   <label class="andy-switch">
     <input type="checkbox" id="andyToggle">
     <span class="slider-andy">⚡</span>
@@ -328,7 +266,7 @@
     </div>
   </div>
 
-  <!-- JS libs -->
+  <!-- Libraries -->
   <script type="module">
     import * as pdfjsLib from './pdf.mjs';
     window.pdfjsLib = pdfjsLib;
@@ -340,34 +278,28 @@
   <script src="./pdf-lib.min.js"></script>
   <script src="./script.js"></script>
 
-  <!-- Theme Mode Logic -->
+  <!-- MODE LOGIC -->
   <script>
     const root = document.documentElement;
 
-    /* DARK MODE */
+    /* Dark Mode */
     const modeToggle = document.getElementById("modeToggle");
-    const savedTheme = localStorage.getItem("theme");
-
-    if (savedTheme === "dark") {
+    if (localStorage.getItem("theme") === "dark") {
       root.classList.add("dark");
       modeToggle.checked = true;
     }
-
     modeToggle.addEventListener("change", () => {
       const on = modeToggle.checked;
       root.classList.toggle("dark", on);
       localStorage.setItem("theme", on ? "dark" : "light");
     });
 
-    /* POWERMAN ANDY MODE */
+    /* Powerman Andy Mode */
     const andyToggle = document.getElementById("andyToggle");
-    const savedAndy = localStorage.getItem("powerman-andy");
-
-    if (savedAndy === "on") {
+    if (localStorage.getItem("powerman-andy") === "on") {
       root.classList.add("powerman-andy");
       andyToggle.checked = true;
     }
-
     andyToggle.addEventListener("change", () => {
       const on = andyToggle.checked;
       root.classList.toggle("powerman-andy", on);
