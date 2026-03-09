@@ -419,60 +419,100 @@ function extractAddressFromHeader(text) {
 // Headless Work Order → add to ZIP
 // ================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
-// ========================================================
-// NEW: Detect highlightable-text Clean PDFs (2-page format)
-// ========================================================
-const originalBytes = await pdfBlobOrFile.arrayBuffer();
+  // Read bytes once
+  const originalBytes = await pdfBlobOrFile.arrayBuffer();
 
-// Clone buffers so pdf.js and PDF-Lib get separate ones
-const bytesForPdfJs  = originalBytes.slice(0);
-const bytesForPdfLib = originalBytes.slice(0);
+  // Clone so pdf.js and PDF‑Lib don’t conflict (avoid detached ArrayBuffer)
+  const bytesForPdfJs  = originalBytes.slice(0);
+  const bytesForPdfLib = originalBytes.slice(0);
 
-const pdfJs = await getPdfJsDoc(bytesForPdfJs);
-const numPages = pdfJs.numPages;
+  // Load pdf.js ONCE (reused for both detection and any rendering)
+  const pdfJs = await getPdfJsDoc(bytesForPdfJs);
+  const numPages = pdfJs.numPages;
 
-// Extract text from page 1 — if this returns real text, it's not a scan
-const p1TextRaw = await extractPageTextRaw(pdfJs, 1);
-const p1Clean = cleanPunc(p1TextRaw);
+  // Quick text read (no rendering) to detect highlightable text and clean type
+  const p1TextRaw = await extractPageTextRaw(pdfJs, 1);
+  const p1Clean = cleanPunc(p1TextRaw);
 
-const isClean =
-  fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
-  fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2);
+  // Detect the new 2‑page highlightable clean format
+  const isClean =
+    fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
+    fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2);
 
-if (isClean && numPages === 2) {
+  if (isClean && numPages === 2) {
+    // Only load PDF‑Lib now (use the separate copy)
+    const srcPdf = await PDFLib.PDFDocument.load(bytesForPdfLib);
 
-  // Use the **other copy** for PDF‑Lib
-  const srcPdf = await PDFLib.PDFDocument.load(bytesForPdfLib);
+    // Each page is either DEEP or SPARKLE (order not guaranteed)
+    for (let p = 1; p <= 2; p++) {
+      const txt = cleanPunc(await extractPageTextRaw(pdfJs, p));
 
-  for (let p = 1; p <= 2; p++) {
-    const txt = cleanPunc(await extractPageTextRaw(pdfJs, p));
+      let desc = "";
+      if (fuzzyIncludesPhrase(txt, "DEEP", 1)) desc = "PERFECT DEEP";
+      else if (fuzzyIncludesPhrase(txt, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
+      else desc = "CLEAN";
 
-    let desc = "";
-    if (fuzzyIncludesPhrase(txt, "DEEP", 1)) desc = "PERFECT DEEP";
-    else if (fuzzyIncludesPhrase(txt, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
-    else desc = "CLEAN";
+      const newName = `${address} - VOID ${desc} WORK ORDER REQUEST.pdf`;
 
-    const newName = `${address} - VOID ${desc} WORK ORDER REQUEST.pdf`;
+      // Split just this page
+      const newDoc = await PDFLib.PDFDocument.create();
+      const [copied] = await newDoc.copyPages(srcPdf, [p - 1]);
+      newDoc.addPage(copied);
+      const outBytes = await newDoc.save();
 
-    // Split single page
-    const newDoc = await PDFLib.PDFDocument.create();
-    const [copied] = await newDoc.copyPages(srcPdf, [p - 1]);
-    newDoc.addPage(copied);
-    const outBytes = await newDoc.save();
+      // Folder routing + uniquify
+      const folder = pickFolderByFilename(newName);
+      if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+      const unique = uniquify(newName, seenByFolder.get(folder));
 
-    // Folder routing + uniquify
-    const folder = pickFolderByFilename(newName);
+      const target = folder ? zip.folder(folder) : zip;
+      target.file(unique, outBytes);
 
-    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-    const unique = uniquify(newName, seenByFolder.get(folder));
+      if (onStep) onStep(`Clean PDF split → ${unique}`);
+    }
 
-    const target = folder ? zip.folder(folder) : zip;
-    target.file(unique, outBytes);
-
-    if (onStep) onStep(`Clean PDF split → ${unique}`);
+    // IMPORTANT: Skip the normal OCR work order logic
+    return;
   }
 
-  return;  // IMPORTANT: Skip normal flow
+  // -------------------------
+  // Normal Work Order Flow (OCR)
+  // -------------------------
+  // Render first page using the already‑loaded pdfJs (no second load!)
+  const page = await pdfJs.getPage(1);
+  const viewport = page.getViewport({ scale: 2.2 });
+
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+  c.width = viewport.width;
+  c.height = viewport.height;
+
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  const pageCanvas = c;
+
+  const contractorCrop = cropFixedContractorRegion(pageCanvas);
+  const contractorText = await ocrCroppedContractor(contractorCrop);
+
+  const descCrop = cropFixedDescRegion(pageCanvas);
+  const rawDesc = await ocrCroppedSingleLine(descCrop);
+
+  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
+  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
+
+  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
+  const folder = pickFolderByFilename(newName);
+
+  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+  const set = seenByFolder.get(folder);
+  const finalName = uniquify(newName, set);
+
+  const target = folder ? zip.folder(folder) : zip;
+
+  // Store original bytes unchanged
+  target.file(finalName, originalBytes);
+
+  if (onStep) onStep(`Work Order → ${finalName}`);
 }
 
   // ========================================================
