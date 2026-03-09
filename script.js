@@ -419,8 +419,66 @@ function extractAddressFromHeader(text) {
 // Headless Work Order → add to ZIP
 // ================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
-  // 1) Extract description + contractor from page 1 crops
+
+  // ========================================================
+  // NEW: Detect highlightable-text Clean PDFs (2-page format)
+  // ========================================================
+  const bytes = await pdfBlobOrFile.arrayBuffer();
+  const pdfJs = await getPdfJsDoc(bytes);
+  const numPages = pdfJs.numPages;
+
+  // Extract text from page 1 — if this returns real text, it's not a scan
+  const p1TextRaw = await extractPageTextRaw(pdfJs, 1);
+  const p1Clean = cleanPunc(p1TextRaw);
+
+  const isClean =
+    fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
+    fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2);
+
+  // If it's a clean PDF that contains real text and has 2 pages → split!
+  if (isClean && numPages === 2) {
+
+    const srcPdf = await PDFLib.PDFDocument.load(bytes);
+
+    for (let p = 1; p <= 2; p++) {
+      const pageText = cleanPunc(await extractPageTextRaw(pdfJs, p));
+
+      let desc = "";
+      if (fuzzyIncludesPhrase(pageText, "DEEP", 1)) desc = "PERFECT DEEP";
+      else if (fuzzyIncludesPhrase(pageText, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
+      else desc = "CLEAN";
+
+      const newName = `${address} - VOID ${desc} WORK ORDER REQUEST.pdf`;
+
+      // Split just this page
+      const newDoc = await PDFLib.PDFDocument.create();
+      const [copiedPage] = await newDoc.copyPages(srcPdf, [p - 1]);
+      newDoc.addPage(copiedPage);
+      const outBytes = await newDoc.save();
+
+      // Folder routing + uniquify
+      const folder = pickFolderByFilename(newName);
+
+      if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+      const set = seenByFolder.get(folder);
+      const uniqueName = uniquify(newName, set);
+
+      const target = folder ? zip.folder(folder) : zip;
+      target.file(uniqueName, outBytes);
+
+      if (onStep) onStep(`Clean PDF split → ${uniqueName}`);
+    }
+
+    // Important: STOP HERE — do NOT run the OCR work order logic
+    return;
+  }
+
+  // ========================================================
+  // ORIGINAL WORK ORDER OCR PIPELINE (unchanged)
+  // ========================================================
+
   const pageCanvas = await renderPdfPageToCanvas(pdfBlobOrFile, 1, 2.2);
+
   const contractorCrop = cropFixedContractorRegion(pageCanvas);
   const contractorText = await ocrCroppedContractor(contractorCrop);
 
@@ -430,7 +488,7 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   const mapped = mapWorkOrderDescription(rawDesc, contractorText);
   const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
 
-  // 2) Build target filename (same pattern previously)
+  // Build final filename
   const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
   const folder = pickFolderByFilename(newName);
 
@@ -440,8 +498,11 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
 
   const target = folder ? zip.folder(folder) : zip;
 
-  // Store original bytes (unchanged)
-  const buf = pdfBlobOrFile instanceof Blob ? await pdfBlobOrFile.arrayBuffer() : pdfBlobOrFile;
+  // Store original bytes unchanged
+  const buf = pdfBlobOrFile instanceof Blob
+    ? await pdfBlobOrFile.arrayBuffer()
+    : pdfBlobOrFile;
+
   target.file(finalName, buf);
 
   if (onStep) onStep(`Work Order → ${finalName}`);
