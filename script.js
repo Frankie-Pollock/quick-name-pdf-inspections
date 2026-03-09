@@ -418,15 +418,18 @@ function extractAddressFromHeader(text) {
 // ================================
 // Headless Work Order → add to ZIP
 // ================================
+// ================================
+// Headless Work Order → add to ZIP
+// ================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
   // Read bytes once
   const originalBytes = await pdfBlobOrFile.arrayBuffer();
 
   // Clone so pdf.js and PDF‑Lib don’t conflict (avoid detached ArrayBuffer)
-  const bytesForPdfJs  = originalBytes.slice(0);
+  const bytesForPdfJs = originalBytes.slice(0);
   const bytesForPdfLib = originalBytes.slice(0);
 
-  // Load pdf.js ONCE (reused for both detection and any rendering)
+  // Load pdf.js ONCE (reused for both detection and rendering)
   const pdfJs = await getPdfJsDoc(bytesForPdfJs);
   const numPages = pdfJs.numPages;
 
@@ -478,7 +481,6 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   // -------------------------
   // Normal Work Order Flow (OCR)
   // -------------------------
-  // Render first page using the already‑loaded pdfJs (no second load!)
   const page = await pdfJs.getPage(1);
   const viewport = page.getViewport({ scale: 2.2 });
 
@@ -514,46 +516,11 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   if (onStep) onStep(`Work Order → ${finalName}`);
 }
 
-  // ========================================================
-  // ORIGINAL WORK ORDER OCR PIPELINE (unchanged)
-  // ========================================================
-
-  const pageCanvas = await renderPdfPageToCanvas(pdfBlobOrFile, 1, 2.2);
-
-  const contractorCrop = cropFixedContractorRegion(pageCanvas);
-  const contractorText = await ocrCroppedContractor(contractorCrop);
-
-  const descCrop = cropFixedDescRegion(pageCanvas);
-  const rawDesc = await ocrCroppedSingleLine(descCrop);
-
-  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
-  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
-
-  // Build final filename
-  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
-  const folder = pickFolderByFilename(newName);
-
-  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(newName, set);
-
-  const target = folder ? zip.folder(folder) : zip;
-
-  // Store original bytes unchanged
-  const buf = pdfBlobOrFile instanceof Blob
-    ? await pdfBlobOrFile.arrayBuffer()
-    : pdfBlobOrFile;
-
-  target.file(finalName, buf);
-
-  if (onStep) onStep(`Work Order → ${finalName}`);
-}
 
 // =======================================================
 // Inspection Pack Splitter → append parts into ZIP
 // =======================================================
 async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder, onStep) {
-  // Read PDF once; create two independent copies for pdf.js and pdf-lib
   const originalBytes = await bigPdfBlob.arrayBuffer();
   const bytesForPdfJs  = originalBytes.slice(0);
   const bytesForPdfLib = originalBytes.slice(0);
@@ -563,7 +530,6 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
 
   const total = pdfJsDoc.numPages;
 
-  // Read header text (page 1) — cleaned for detection
   const p1Clean = await extractPageText(pdfJsDoc, 1);
 
   const isAcGold =
@@ -587,10 +553,9 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
     if (onStep) onStep(`Saved → ${finalName}`);
   }
 
-  // Save Page 1 as Inspection Checklist
+  // Page 1 = Inspection Checklist
   await saveSinglePage(1, `${address} - VOID INSPECTION CHECKLIST.pdf`);
 
-  // AC GOLD MTW FLOW
   if (isAcGold) {
     let lastText = "";
     if (total >= 2) {
@@ -612,7 +577,6 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
     }
   }
 
-  // INTERNAL VOID PACK FLOW
   else {
     let startBmdFrom = 2;
     let bmdIdx = 0;
@@ -643,22 +607,21 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
 
 
 // =======================================
-// QUEUE STATE + HELPERS (UPDATED - NO FILE PICKER)
+// QUEUE STATE + HELPERS
 // =======================================
 const processBtn = document.getElementById("processBtn");
 const clearBtn = document.getElementById("clearBtn");
 const queueList = document.getElementById("queueList");
 
-// Keep a stable queue: Array<File>
 let queuedFiles = [];
 
-// Render current queue
 function renderQueue() {
   if (!queueList) return;
   if (!queuedFiles.length) {
     queueList.innerHTML = `<div style="color:#666">Queue is empty.</div>`;
     return;
   }
+
   const items = queuedFiles.map((f, idx) => {
     const sizeKB = Math.max(1, Math.round((f.size || 0) / 1024));
     return `
@@ -669,9 +632,9 @@ function renderQueue() {
         <button data-remove="${idx}" style="background:#eee;border:1px solid #ddd;color:#333;padding:3px 8px;border-radius:4px;cursor:pointer">Remove</button>
       </div>`;
   }).join("");
+
   queueList.innerHTML = items;
 
-  // Hook remove buttons
   queueList.querySelectorAll("button[data-remove]").forEach(btn => {
     btn.addEventListener("click", () => {
       const idx = parseInt(btn.getAttribute("data-remove"), 10);
@@ -683,15 +646,15 @@ function renderQueue() {
   });
 }
 
-// Add files (dedupe by name+size+type to avoid accidental duplicates)
 function addToQueue(fileListOrArray) {
   const incoming = Array.from(fileListOrArray || []);
   const sig = f => `${f.name}::${f.size}::${f.type}`;
   const existing = new Set(queuedFiles.map(sig));
+
   for (const f of incoming) {
-    // Only accept PDFs and ZIPs here
     const lower = (f.name || "").toLowerCase();
     if (!(lower.endsWith(".pdf") || lower.endsWith(".zip"))) continue;
+
     const s = sig(f);
     if (!existing.has(s)) {
       queuedFiles.push(f);
@@ -701,14 +664,12 @@ function addToQueue(fileListOrArray) {
   renderQueue();
 }
 
-// Initial render
 renderQueue();
 
-// =======================================
-// DRAG & DROP → Queue only (NO AUTO-RUN)  (UPDATED)
-// =======================================
 
-// Prevent default on document so browser doesn't open files on page
+// =======================================
+// DRAG & DROP → Queue only
+// =======================================
 ["dragover", "drop"].forEach(evt => {
   document.addEventListener(evt, e => e.preventDefault());
 });
@@ -717,16 +678,17 @@ dropzone.addEventListener("dragover", e => {
   e.preventDefault();
   dropzone.style.opacity = 0.85;
 });
+
 dropzone.addEventListener("dragleave", () => {
   dropzone.style.opacity = 1;
 });
+
 dropzone.addEventListener("drop", e => {
   e.preventDefault();
   dropzone.style.opacity = 1;
-  const dropped = Array.from(e.dataTransfer.files || []);
-  if (!dropped.length) return;
-  addToQueue(dropped);
+  addToQueue(e.dataTransfer.files);
 });
+
 
 // =======================================
 // CLEAR QUEUE
@@ -736,8 +698,9 @@ clearBtn.addEventListener("click", () => {
   renderQueue();
 });
 
+
 // =======================================
-// PROCESS BUTTON → Run pipeline on queued files (UPDATED TEXT)
+// PROCESS BUTTON
 // =======================================
 processBtn.addEventListener("click", async () => {
   if (!queuedFiles.length) {
@@ -752,26 +715,28 @@ processBtn.addEventListener("click", async () => {
   }
 });
 
+
 // =======================================
-// MAIN PIPELINE (refactored from old drop handler)
-// Accepts queuedFiles, flattens ZIPs, then runs your existing logic
+// MAIN PIPELINE
 // =======================================
 async function processQueuedFiles() {
-  // Clone queue at start to avoid mutation during process
   let droppedFiles = Array.from(queuedFiles);
 
-  // Flatten any ZIPs into PDFs
+  // Flatten ZIPs
   if (droppedFiles.length) {
     const flattened = [];
     for (const f of droppedFiles) {
       const lower = (f.name || "").toLowerCase();
+
       if (lower.endsWith(".zip")) {
         try {
           setProgress(0, 1, `Reading ZIP: ${f.name}…`);
           const zipIn = await JSZip.loadAsync(f);
+
           const pdfEntries = Object.values(zipIn.files)
             .filter(ff => !ff.dir && ff.name.toLowerCase().endsWith(".pdf"))
             .sort((a, b) => naturalSort(a.name, b.name));
+
           for (const entry of pdfEntries) {
             const blob = await zipIn.file(entry.name).async("blob");
             flattened.push(new File([blob], entry.name, { type: "application/pdf" }));
@@ -796,13 +761,10 @@ async function processQueuedFiles() {
     return;
   }
 
-  // -----------------------------
   // First pass → identify inspection packs + obtain ADDRESS
-  // -----------------------------
   ensureProgressUI();
   setProgress(0, 100, "Analysing files…");
 
-  // Build plan + discover address by scanning for first inspection pack header
   const filePlans = [];
   let estimatedSteps = 0;
   let address = "";
@@ -811,32 +773,28 @@ async function processQueuedFiles() {
     const bytes = await f.arrayBuffer();
     const doc = await getPdfJsDoc(bytes);
 
-    // Page-1 text (both raw and cleaned)
-    const p1Raw   = await extractPageTextRaw(doc, 1);
+    const p1Raw = await extractPageTextRaw(doc, 1);
     const p1Clean = cleanPunc(p1Raw);
 
     const isPack = isInspectionPackHeader(p1Clean);
     const pages = doc.numPages;
 
     if (isPack && !address) {
-      // Extract address from raw page text → then format to filename (uppercase, commas kept, no postcode)
       const extracted = extractAddressFromHeader(p1Raw);
       address = toFilenameAddressKeepCommas(extracted);
     }
 
     filePlans.push({ file: f, isPack, pages });
-    estimatedSteps += isPack ? pages : 1; // rough estimate
+    estimatedSteps += isPack ? pages : 1;
   }
 
   if (!address) {
-    alert("Could not auto-detect address from an Inspection Checklist header. Please include an inspection pack in the drop.");
+    alert("Could not auto-detect address from an Inspection Checklist header. Please include an inspection pack.");
     finishProgress();
     return;
   }
 
-  // -----------------------------
-  // Process all files into one ZIP
-  // -----------------------------
+  // Process all files
   const outZip = new JSZip();
   const seenByFolder = new Map();
   let done = 0;
@@ -854,9 +812,7 @@ async function processQueuedFiles() {
     }
   }
 
-  // -----------------------------
-  // Finalize ZIP + Download
-  // -----------------------------
+  // Finalize ZIP
   setProgress(estimatedSteps, estimatedSteps, "Packaging ZIP…");
   const outBlob = await outZip.generateAsync({ type: "blob" });
   const a = document.createElement("a");
