@@ -1,61 +1,38 @@
+// Copyright © 2024–2026 Francis Pollock
+// All rights reserved.
 
-//Copyright © 2024–2026 Francis Pollock
-//All rights reserved.
-//This software is owned exclusively by the author, Francis Pollock.
-
-  // =======================================
+// =======================================
 // FINAL – Hands-free processing for Inspection Packs + Work Orders
 // =======================================
-//
-// Requires: pdf.js, pdf-lib, JSZip, Tesseract.js loaded before this script.
-// Dropzone element: an element with id="dropzone" to drop files onto.
-//
-// Outputs one ZIP named:  "<ADDRESS> - VOID RENAMED.zip"
-// with correctly named PDFs inside.
-//
 
-// ---- Crop settings (percentages of page) ----
+// ---- Crop settings ----
 const CROP_TOP_PCT = 0.30;
 const CROP_BOTTOM_PCT = 0.43;
 const CROP_LEFT_PCT = 0.05;
 const CROP_RIGHT_PCT = 0.95;
 
-// CONTRACTOR/SUPPLIER row (just above description cell)
 const CONTRACTOR_TOP_PCT = 0.18;
 const CONTRACTOR_BOTTOM_PCT = 0.255;
 const CONTRACTOR_LEFT_PCT = CROP_LEFT_PCT;
 const CONTRACTOR_RIGHT_PCT = CROP_RIGHT_PCT;
 
-// =======================================
-// Utility helpers
-// =======================================
+// ---------------------------------------
 const $ = sel => document.querySelector(sel);
 
 function toUpper(s){ return (s || "").toUpperCase(); }
 function cleanPunc(s){
   return toUpper(s)
-    .replace(/[^A-Z0-9'\s]/g, " ")   // allow apostrophes
+    .replace(/[^A-Z0-9'\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// Preserve commas (for address) but make filename-safe and uppercase
 function toFilenameAddressKeepCommas(s) {
   s = (s || "").toUpperCase().trim();
-
-  // Replace illegal filename characters: \ / : * ? " < > |
-  s = s.replace(/[\\\/:\*\?"<>\|]+/g, " ");
-
-  // Preserve commas; collapse other punctuation to spaces
+  s = s.replace(/[\\\/:\*\?"<>|]+/g, " ");
   s = s.replace(/[^A-Z0-9,'\s]/g, " ");
-
-  // Collapse multiple spaces
   s = s.replace(/\s+/g, " ").trim();
-
-  // Remove space before commas, ensure one space after
   s = s.replace(/\s+,/g, ",").replace(/,(\S)/g, ", $1");
-
-  // Trim trailing spaces/commas just in case
   return s.replace(/[,\s]+$/g, "").trim();
 }
 
@@ -74,429 +51,152 @@ function uniquify(name, existing) {
   return unique;
 }
 
-// Natural sort (A2 before A10)
 function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-// Simple Levenshtein distance
-function levenshtein(a, b) {
-  a = a || ""; b = b || "";
-  const m = a.length, n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1));
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + cost
-      );
-    }
-  }
-  return dp[m][n];
-}
-function tokenize(str){ return cleanPunc(str).split(/\s+/).filter(Boolean); }
-
-// Fuzzy phrase search: sliding window
-function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
-  const hayTokens = tokenize(haystack);
-  const phraseTokens = tokenize(phrase);
-  if (!hayTokens.length || !phraseTokens.length) return false;
-
-  const windowSize = phraseTokens.length;
-  const target = phraseTokens.join(" ");
-  for (let i = 0; i <= hayTokens.length - windowSize; i++) {
-    const window = hayTokens.slice(i, i + windowSize).join(" ");
-    if (levenshtein(window, target) <= maxDist) return true;
-  }
-  return false;
-}
-
-// =======================================
-// Minimal progress UI (auto-injected)
-// =======================================
-function ensureProgressUI() {
-  if (document.getElementById("autoProgressWrap")) return;
-
-  const wrap = document.createElement("div");
-  wrap.id = "autoProgressWrap";
-  wrap.style.cssText = `
-    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,.45); z-index: 999999; font-family: system-ui,Segoe UI,Arial,sans-serif;
-  `;
-  wrap.innerHTML = `
-    <div style="width: min(560px,90vw); background:#fff; border-radius:10px; padding:20px 22px; box-shadow: 0 10px 30px rgba(0,0,0,.3)">
-      <div style="font-weight:600; margin-bottom:10px; font-size:18px">Processing…</div>
-      <div id="autoStatus" style="font-size:13px;color:#333;margin-bottom:12px">Starting…</div>
-      <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden">
-        <div id="autoBar" style="height:100%;width:0%;background:#0078d4;transition:width .2s ease"></div>
-      </div>
-      <div id="autoPct" style="margin-top:8px;font-size:12px;color:#666">0%</div>
-    </div>
-  `;
-  document.body.appendChild(wrap);
-}
-
-function setProgress(current, total, msg) {
-  ensureProgressUI();
-  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
-  const bar = document.getElementById("autoBar");
-  const pctLbl = document.getElementById("autoPct");
-  const st = document.getElementById("autoStatus");
-  if (bar) bar.style.width = pct + "%";
-  if (pctLbl) pctLbl.textContent = `${pct}%`;
-  if (st && msg) st.textContent = msg;
-}
-
-function finishProgress() {
-  setProgress(1, 1, "Done");
-  setTimeout(() => {
-    const wrap = document.getElementById("autoProgressWrap");
-    if (wrap) wrap.remove();
-  }, 600);
-}
-
-// =======================================
-// DOM references (minimal)
-// =======================================
-const dropzone = $("#dropzone");
-
-// =======================================
-// PDF rendering helpers
-// =======================================
-async function renderPdfPageToCanvas(blob, pageNum = 1, scale = 2.2) {
-  const buf = await blob.arrayBuffer();
-  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-  const page = await pdf.getPage(pageNum);
-
-  const viewport = page.getViewport({ scale });
-  const c = document.createElement("canvas");
-  const cx = c.getContext("2d");
-  c.width = viewport.width;
-  c.height = viewport.height;
-  await page.render({ canvasContext: cx, viewport }).promise;
-  return c;
-}
-
-function cropRegion(pageCanvas, leftPct, rightPct, topPct, bottomPct) {
-  const W = pageCanvas.width;
-  const H = pageCanvas.height;
-
-  const x0 = Math.round(W * leftPct);
-  const x1 = Math.round(W * rightPct);
-  const y0 = Math.round(H * topPct);
-  const y1 = Math.round(H * bottomPct);
-
-  const w = Math.max(10, x1 - x0);
-  const h = Math.max(10, y1 - y0);
-
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  const oc = out.getContext("2d");
-  oc.drawImage(pageCanvas, x0, y0, w, h, 0, 0, w, h);
-  return out;
-}
-
-function cropFixedDescRegion(pageCanvas) {
-  return cropRegion(pageCanvas, CROP_LEFT_PCT, CROP_RIGHT_PCT, CROP_TOP_PCT, CROP_BOTTOM_PCT);
-}
-function cropFixedContractorRegion(pageCanvas) {
-  return cropRegion(pageCanvas, CONTRACTOR_LEFT_PCT, CONTRACTOR_RIGHT_PCT, CONTRACTOR_TOP_PCT, CONTRACTOR_BOTTOM_PCT);
-}
-
-// =======================================
-// Image enhancement for OCR (greyscale + auto-level)
-// =======================================
-function enhanceForOcr(srcCanvas) {
-  const w = srcCanvas.width;
-  const h = srcCanvas.height;
-  const dst = document.createElement("canvas");
-  dst.width = w;
-  dst.height = h;
-  const dctx = dst.getContext("2d");
-  dctx.drawImage(srcCanvas, 0, 0);
-
-  const img = dctx.getImageData(0, 0, w, h);
-  const data = img.data;
-
-  const hist = new Array(256).fill(0);
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const y = (0.299 * r + 0.587 * g + 0.114 * b) | 0;
-    hist[y]++;
-    data[i] = data[i + 1] = data[i + 2] = y;
-  }
-
-  const total = w * h;
-  const clip = Math.max(1, Math.round(total * 0.01));
-  let lo = 0, hi = 255, acc = 0;
-
-  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > clip) { lo = v; break; } }
-  acc = 0;
-  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > clip) { hi = v; break; } }
-
-  const range = Math.max(1, hi - lo);
-
-  for (let i = 0; i < data.length; i += 4) {
-    let y = data[i];
-    y = ((y - lo) * 255 / range);
-    y = Math.max(0, Math.min(255, y));
-    if (y > 170) y = Math.min(255, y + 20);
-    data[i] = data[i + 1] = data[i + 2] = y;
-  }
-
-  dctx.putImageData(img, 0, 0);
-  return dst;
-}
-
-// =======================================
-// OCR helpers (headless)
-// =======================================
-async function ocrCroppedSingleLine(cropCanvas) {
-  const enhanced = enhanceForOcr(cropCanvas);
-
-  const res1 = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 7
-  });
-
-  let lines = (res1?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  if (lines.length) return cleanPunc(lines[0]);
-
-  const res2 = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6
-  });
-
-  lines = (res2?.data?.text || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  return lines.length ? cleanPunc(lines[0]) : "";
-}
-
-async function ocrCroppedContractor(cropCanvas) {
-  const enhanced = enhanceForOcr(cropCanvas);
-  const res = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6
-  });
-  return cleanPunc(res?.data?.text || "");
-}
-
-// ================================
-// Work Order Mapping Rules
-// ================================
-function mapWorkOrderDescription(desc, contractorText) {
-  const hay = `${desc || ""} ${contractorText || ""}`.trim();
-
-  // Contractor-led (highest priority)
-  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) return "ASBESTOS REMOVAL";
-  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) || fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) return "ASBESTOS SURVEY";
-  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) return "RODGERS ISOLATOR";
-  if (fuzzyIncludesPhrase(hay, "MTW AS PER VRR", 3)) return "AC GOLD MTW";
-  // Description-led
-  if (fuzzyIncludesPhrase(hay, "DEEP", 1))     return "PERFECT DEEP";
-  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2))  return "PERFECT SPARKLE";
-
-  return null; // no mapping → use original
-}
-
-// ================================
-// Folder Routing
-// ================================
-function pickFolderByFilename(finalName) {
-  const n = (finalName || "").toUpperCase();
-
-  if (n.includes("ASBESTOS")) return "Asbestos";
-  if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
-
-  if (n.includes("CLEAN") || n.includes("PERFECT DEEP") || n.includes("PERFECT SPARKLE"))
-    return "Cleans + Clearouts";
-
-  if (n.includes("EICR")) return "Periodic - Rewires";
-  if (n.includes("EPC")) return "EPC";
-  if (n.includes("ROT WORKS")) return "Rot Works";
-  if (n.includes("RECHARGE")) return "Rechargeable Repairs";
-  if (n.includes("AC GOLD MTW")) return "MTW";
-  if (n.includes("MTW AS PER VRR")) return "MTW";
-  if (n.includes("BMD WORKS")) return "NEC Lines";
-  if (n.includes("RODGERS ISOLATOR")) return "Power";
-
-  return ""; // default → ZIP root
-}
-
-// =======================================
-// TEXT EXTRACTION helpers (pdf.js)
-// =======================================
+// ---------------------------------------
 async function getPdfJsDoc(blobOrBytes) {
   const data = blobOrBytes instanceof Blob ? await blobOrBytes.arrayBuffer() : blobOrBytes;
   return window.pdfjsLib.getDocument({ data }).promise;
 }
-async function extractPageText(pdfJsDoc, pageNum) {
-  const page = await pdfJsDoc.getPage(pageNum);
-  const textContent = await page.getTextContent();
-  const text = textContent.items.map(i => (i.str || "")).join(" ");
-  return cleanPunc(text);
-}
-// Raw (not cleaned) – needed for address extraction to preserve commas BEFORE final formatting
 async function extractPageTextRaw(pdfJsDoc, pageNum) {
   const page = await pdfJsDoc.getPage(pageNum);
-  const textContent = await page.getTextContent();
-  return textContent.items.map(i => (i.str || "")).join(" ");
+  const text = await page.getTextContent();
+  return text.items.map(i => (i.str || "")).join(" ");
+}
+async function extractPageTextClean(pdfJsDoc, pageNum) {
+  return cleanPunc(await extractPageTextRaw(pdfJsDoc, pageNum));
 }
 
-function looksBlankText(cleaned) {
-  return !cleaned || cleaned.trim().length < 5;
-}
-function includesAny(cleaned, arr) {
-  const U = toUpper(cleaned);
-  return arr.some(s => U.includes(toUpper(s)));
-}
-
-// =======================================
-// Inspection Pack header detector
-// =======================================
-function isInspectionPackHeader(cleanedText) {
-  const t = toUpper(cleanedText || "");
-  return (
-    t.includes("INSPECTION CHECKLIST") ||
-    t.includes("INTERNAL VOID PACK") ||
-    t.includes("MULTI TRADE WORKS") ||   // cleaned (no hyphen)
-    t.includes("MULTI-TRADE WORKS")     // as printed (safe)
-  );
+// ---------------------------------------
+function getRegionCoords(viewport, leftPct, rightPct, topPct, bottomPct) {
+  return {
+    x0: viewport.width * leftPct,
+    x1: viewport.width * rightPct,
+    y0: viewport.height * topPct,
+    y1: viewport.height * bottomPct
+  };
 }
 
-// =======================================
-// ADDRESS EXTRACTION (postcode removed, COMMAS PRESERVED)
-// Examples:
-//  "INTERNAL VOID PACK FOR 235 Carmuirs Avenue, Falkirk, FK1 4LD (..)" → "235 Carmuirs Avenue, Falkirk"
-//  "MULTI-TRADE WORKS: 40 Bridge Crescent, Denny, FK6 6PD"             → "40 Bridge Crescent, Denny"
-// =======================================
-function extractAddressFromHeader(text) {
-  if (!text) return "";
-
-  // Collapse whitespace but DO NOT touch punctuation (keep commas)
-  const header = String(text).replace(/\s+/g, " ").trim();
-
-  // UK postcode pattern (broad)
-  const postcodeRegex = /[A-Z]{1,2}[0-9][A-Z0-9]?\s*[0-9][A-Z]{2}/i;
-
-  let working = "";
-
-  // Internal Void Pack pattern "... PACK FOR <ADDRESS ... POSTCODE> (...)"
-  const idxFor = header.toUpperCase().indexOf("PACK FOR");
-  if (idxFor !== -1) {
-    working = header.slice(idxFor + "PACK FOR".length).trim();
-  }
-
-  // AC GOLD MTW pattern "… WORKS: <ADDRESS ... POSTCODE>"
-  if (!working) {
-    const idxWorks = header.toUpperCase().indexOf("WORKS:");
-    if (idxWorks !== -1) {
-      working = header.slice(idxWorks + "WORKS:".length).trim();
+function extractTextInRegion(textContent, region) {
+  const lines = [];
+  for (const item of textContent.items) {
+    const [,,, , x, y] = item.transform;
+    if (x >= region.x0 && x <= region.x1 &&
+        y >= region.y0 && y <= region.y1) {
+      if (item.str && item.str.trim()) lines.push(item.str);
     }
   }
-
-  if (!working) return "";
-
-  // If a postcode is present, cut the string BEFORE the postcode
-  const m = working.match(postcodeRegex);
-  if (m) {
-    const pcStart = working.indexOf(m[0]);
-    working = working.slice(0, pcStart).trim();
-  }
-
-  // Remove trailing separators that may precede the postcode region
-  // BUT keep internal commas such as "CRESCENT, DENNY"
-  working = working.replace(/[,\-\:\s]+$/g, "").trim();
-
-  return working;
+  return lines.join(" ").trim();
 }
 
-// ================================
-// Headless Work Order → add to ZIP
-// ================================
-// ================================
-// Headless Work Order → add to ZIP
-// ================================
+// ---------------------------------------
+async function smartExtract(pdfJs, cropCanvas, region) {
+  const page = await pdfJs.getPage(1);
+  const textContent = await page.getTextContent();
+  const txt = extractTextInRegion(textContent, region);
+
+  if (txt && txt.length > 2) {
+    return cleanPunc(txt);
+  }
+
+  return await ocrCroppedSingleLine(cropCanvas);
+}
+
+// =======================================
+// Work Order Mapping
+// =======================================
+function mapWorkOrderDescription(desc, contractorText) {
+  const hay = `${desc || ""} ${contractorText || ""}`.trim();
+
+  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) return "ASBESTOS REMOVAL";
+  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) ||
+      fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) return "ASBESTOS SURVEY";
+  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) return "RODGERS ISOLATOR";
+  if (fuzzyIncludesPhrase(hay, "MTW AS PER VRR", 3)) return "AC GOLD MTW";
+  if (fuzzyIncludesPhrase(hay, "DEEP", 1)) return "PERFECT DEEP";
+  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2)) return "PERFECT SPARKLE";
+
+  return null;
+}
+
+// =======================================
+// Headless Work Order → add to ZIP (HYBRID TEXT/OCR)
+// =======================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
-  // Read bytes once
   const originalBytes = await pdfBlobOrFile.arrayBuffer();
 
-  // Clone so pdf.js and PDF‑Lib don’t conflict (avoid detached ArrayBuffer)
   const bytesForPdfJs = originalBytes.slice(0);
   const bytesForPdfLib = originalBytes.slice(0);
 
-  // Load pdf.js ONCE (reused for both detection and rendering)
   const pdfJs = await getPdfJsDoc(bytesForPdfJs);
   const numPages = pdfJs.numPages;
 
-  // Quick text read (no rendering) to detect highlightable text and clean type
   const p1TextRaw = await extractPageTextRaw(pdfJs, 1);
   const p1Clean = cleanPunc(p1TextRaw);
 
-  // Detect the new 2‑page highlightable clean format
-  const isClean =
-    fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
-    fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2);
+  const isCleanTwoPage =
+    (fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
+     fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2)) &&
+    numPages === 2;
 
-  if (isClean && numPages === 2) {
-    // Only load PDF‑Lib now (use the separate copy)
+  if (isCleanTwoPage) {
     const srcPdf = await PDFLib.PDFDocument.load(bytesForPdfLib);
 
-    // Each page is either DEEP or SPARKLE (order not guaranteed)
     for (let p = 1; p <= 2; p++) {
-      const txt = cleanPunc(await extractPageTextRaw(pdfJs, p));
-
+      const raw = cleanPunc(await extractPageTextRaw(pdfJs, p));
       let desc = "";
-      if (fuzzyIncludesPhrase(txt, "DEEP", 1)) desc = "PERFECT DEEP";
-      else if (fuzzyIncludesPhrase(txt, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
+      if (fuzzyIncludesPhrase(raw, "DEEP", 1)) desc = "PERFECT DEEP";
+      else if (fuzzyIncludesPhrase(raw, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
       else desc = "CLEAN";
 
       const newName = `${address} - VOID ${desc} WORK ORDER REQUEST.pdf`;
 
-      // Split just this page
       const newDoc = await PDFLib.PDFDocument.create();
       const [copied] = await newDoc.copyPages(srcPdf, [p - 1]);
       newDoc.addPage(copied);
-      const outBytes = await newDoc.save();
+      const bytes = await newDoc.save();
 
-      // Folder routing + uniquify
       const folder = pickFolderByFilename(newName);
       if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-      const unique = uniquify(newName, seenByFolder.get(folder));
+      const finalName = uniquify(newName, seenByFolder.get(folder));
 
       const target = folder ? zip.folder(folder) : zip;
-      target.file(unique, outBytes);
+      target.file(finalName, bytes);
 
-      if (onStep) onStep(`Clean PDF split → ${unique}`);
+      if (onStep) onStep(`Clean PDF split → ${finalName}`);
     }
-
-    // IMPORTANT: Skip the normal OCR work order logic
     return;
   }
 
-  // -------------------------
-  // Normal Work Order Flow (OCR)
-  // -------------------------
+  // Normal WO: Hybrid Text → OCR
   const page = await pdfJs.getPage(1);
-  const viewport = page.getViewport({ scale: 2.2 });
+  const viewport = page.getViewport({ scale: 1.0 });
 
-  const c = document.createElement("canvas");
-  const ctx = c.getContext("2d");
-  c.width = viewport.width;
-  c.height = viewport.height;
+  const contractorRegion = getRegionCoords(
+    viewport,
+    CONTRACTOR_LEFT_PCT,
+    CONTRACTOR_RIGHT_PCT,
+    CONTRACTOR_TOP_PCT,
+    CONTRACTOR_BOTTOM_PCT
+  );
 
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  const pageCanvas = c;
+  const descRegion = getRegionCoords(
+    viewport,
+    CROP_LEFT_PCT,
+    CROP_RIGHT_PCT,
+    CROP_TOP_PCT,
+    CROP_BOTTOM_PCT
+  );
+
+  const pageCanvas = await renderPdfPageToCanvas(pdfBlobOrFile, 1, 2.0);
 
   const contractorCrop = cropFixedContractorRegion(pageCanvas);
-  const contractorText = await ocrCroppedContractor(contractorCrop);
-
   const descCrop = cropFixedDescRegion(pageCanvas);
-  const rawDesc = await ocrCroppedSingleLine(descCrop);
+
+  const contractorText = await smartExtract(pdfJs, contractorCrop, contractorRegion);
+  const rawDesc = await smartExtract(pdfJs, descCrop, descRegion);
 
   const mapped = mapWorkOrderDescription(rawDesc, contractorText);
   const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
@@ -505,22 +205,19 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   const folder = pickFolderByFilename(newName);
 
   if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(newName, set);
+  const finalName = uniquify(newName, seenByFolder.get(folder));
 
   const target = folder ? zip.folder(folder) : zip;
-
-  // Store original bytes unchanged
   target.file(finalName, originalBytes);
 
   if (onStep) onStep(`Work Order → ${finalName}`);
 }
 
-
 // =======================================================
-// Inspection Pack Splitter → append parts into ZIP
+// Inspection Pack Splitter → append parts into ZIP (Optimised)
 // =======================================================
 async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder, onStep) {
+  // Read PDF once; create two independent copies for pdf.js and pdf-lib
   const originalBytes = await bigPdfBlob.arrayBuffer();
   const bytesForPdfJs  = originalBytes.slice(0);
   const bytesForPdfLib = originalBytes.slice(0);
@@ -530,7 +227,8 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
 
   const total = pdfJsDoc.numPages;
 
-  const p1Clean = await extractPageText(pdfJsDoc, 1);
+  // Read header text (page 1) — cleaned for detection
+  const p1Clean = await extractPageTextClean(pdfJsDoc, 1);
 
   const isAcGold =
     includesAny(p1Clean, ["MULTI TRADE WORKS"]) ||
@@ -553,20 +251,21 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
     if (onStep) onStep(`Saved → ${finalName}`);
   }
 
-  // Page 1 = Inspection Checklist
+  // Save Page 1 as Inspection Checklist
   await saveSinglePage(1, `${address} - VOID INSPECTION CHECKLIST.pdf`);
 
+  // AC GOLD MTW FLOW
   if (isAcGold) {
     let lastText = "";
     if (total >= 2) {
-      lastText = await extractPageText(pdfJsDoc, total);
+      lastText = await extractPageTextClean(pdfJsDoc, total);
     }
     const lastIsBmd = includesAny(lastText, ["BMD WORKS REQUIRED"]);
     const mtwEnd = lastIsBmd ? total - 1 : total;
 
     let mtwIdx = 0;
     for (let p = 2; p <= mtwEnd; p++) {
-      const txt = await extractPageText(pdfJsDoc, p);
+      const txt = await extractPageTextClean(pdfJsDoc, p);
       if (looksBlankText(txt)) continue;
       mtwIdx++;
       await saveSinglePage(p, `${address} - VOID AC GOLD MTW (${mtwIdx}).pdf`);
@@ -577,12 +276,13 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
     }
   }
 
+  // INTERNAL VOID PACK FLOW
   else {
     let startBmdFrom = 2;
     let bmdIdx = 0;
 
     if (total >= 2) {
-      const p2Text = await extractPageText(pdfJsDoc, 2);
+      const p2Text = await extractPageTextClean(pdfJsDoc, 2);
       const p2Blank = looksBlankText(p2Text);
       const p2Recharge = includesAny(p2Text, ["RECHARGE WORK","RECHARGEABLE WORK"]);
 
@@ -597,7 +297,7 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
     }
 
     for (let p = startBmdFrom; p <= total; p++) {
-      const txt = await extractPageText(pdfJsDoc, p);
+      const txt = await extractPageTextClean(pdfJsDoc, p);
       if (looksBlankText(txt)) continue;
       bmdIdx++;
       await saveSinglePage(p, `${address} - VOID BMD WORKS (${bmdIdx}).pdf`);
@@ -607,11 +307,12 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
 
 
 // =======================================
-// QUEUE STATE + HELPERS
+// QUEUE STATE + HELPERS (Optimised)
 // =======================================
 const processBtn = document.getElementById("processBtn");
 const clearBtn = document.getElementById("clearBtn");
 const queueList = document.getElementById("queueList");
+const dropzone = document.getElementById("dropzone");
 
 let queuedFiles = [];
 
@@ -668,61 +369,67 @@ renderQueue();
 
 
 // =======================================
-// DRAG & DROP → Queue only
+// DRAG & DROP → Queue only (No auto-run)
 // =======================================
 ["dragover", "drop"].forEach(evt => {
   document.addEventListener(evt, e => e.preventDefault());
 });
 
-dropzone.addEventListener("dragover", e => {
-  e.preventDefault();
-  dropzone.style.opacity = 0.85;
-});
+if (dropzone) {
+  dropzone.addEventListener("dragover", e => {
+    e.preventDefault();
+    dropzone.style.opacity = 0.85;
+  });
 
-dropzone.addEventListener("dragleave", () => {
-  dropzone.style.opacity = 1;
-});
+  dropzone.addEventListener("dragleave", () => {
+    dropzone.style.opacity = 1;
+  });
 
-dropzone.addEventListener("drop", e => {
-  e.preventDefault();
-  dropzone.style.opacity = 1;
-  addToQueue(e.dataTransfer.files);
-});
+  dropzone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropzone.style.opacity = 1;
+    addToQueue(e.dataTransfer.files);
+  });
+}
 
 
 // =======================================
 // CLEAR QUEUE
 // =======================================
-clearBtn.addEventListener("click", () => {
-  queuedFiles = [];
-  renderQueue();
-});
+if (clearBtn) {
+  clearBtn.addEventListener("click", () => {
+    queuedFiles = [];
+    renderQueue();
+  });
+}
 
 
 // =======================================
-// PROCESS BUTTON
+// PROCESS BUTTON → Run pipeline
 // =======================================
-processBtn.addEventListener("click", async () => {
-  if (!queuedFiles.length) {
-    alert("Queue is empty. Drop PDF(s) or ZIP(s) first.");
-    return;
-  }
-  try {
-    await processQueuedFiles();
-  } catch (err) {
-    console.error(err);
-    alert("An error occurred during processing.");
-  }
-});
+if (processBtn) {
+  processBtn.addEventListener("click", async () => {
+    if (!queuedFiles.length) {
+      alert("Queue is empty. Drop PDF(s) or ZIP(s) first.");
+      return;
+    }
+    try {
+      await processQueuedFiles();
+    } catch (err) {
+      console.error(err);
+      alert("An error occurred during processing.");
+    }
+  });
+}
 
 
 // =======================================
-// MAIN PIPELINE
+// MAIN PIPELINE (ZIP flatten → detect → process)
 // =======================================
 async function processQueuedFiles() {
   let droppedFiles = Array.from(queuedFiles);
 
-  // Flatten ZIPs
+  // Flatten ZIPs into PDFs
   if (droppedFiles.length) {
     const flattened = [];
     for (const f of droppedFiles) {
@@ -761,7 +468,7 @@ async function processQueuedFiles() {
     return;
   }
 
-  // First pass → identify inspection packs + obtain ADDRESS
+  // Discover address from first inspection pack
   ensureProgressUI();
   setProgress(0, 100, "Analysing files…");
 
@@ -794,7 +501,7 @@ async function processQueuedFiles() {
     return;
   }
 
-  // Process all files
+  // Process into one ZIP
   const outZip = new JSZip();
   const seenByFolder = new Map();
   let done = 0;
@@ -812,7 +519,7 @@ async function processQueuedFiles() {
     }
   }
 
-  // Finalize ZIP
+  // Finalize ZIP + Download
   setProgress(estimatedSteps, estimatedSteps, "Packaging ZIP…");
   const outBlob = await outZip.generateAsync({ type: "blob" });
   const a = document.createElement("a");
