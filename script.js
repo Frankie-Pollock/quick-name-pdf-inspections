@@ -419,59 +419,61 @@ function extractAddressFromHeader(text) {
 // Headless Work Order → add to ZIP
 // ================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
+// ========================================================
+// NEW: Detect highlightable-text Clean PDFs (2-page format)
+// ========================================================
+const originalBytes = await pdfBlobOrFile.arrayBuffer();
 
-  // ========================================================
-  // NEW: Detect highlightable-text Clean PDFs (2-page format)
-  // ========================================================
-  const bytes = await pdfBlobOrFile.arrayBuffer();
-  const pdfJs = await getPdfJsDoc(bytes);
-  const numPages = pdfJs.numPages;
+// Clone buffers so pdf.js and PDF-Lib get separate ones
+const bytesForPdfJs  = originalBytes.slice(0);
+const bytesForPdfLib = originalBytes.slice(0);
 
-  // Extract text from page 1 — if this returns real text, it's not a scan
-  const p1TextRaw = await extractPageTextRaw(pdfJs, 1);
-  const p1Clean = cleanPunc(p1TextRaw);
+const pdfJs = await getPdfJsDoc(bytesForPdfJs);
+const numPages = pdfJs.numPages;
 
-  const isClean =
-    fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
-    fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2);
+// Extract text from page 1 — if this returns real text, it's not a scan
+const p1TextRaw = await extractPageTextRaw(pdfJs, 1);
+const p1Clean = cleanPunc(p1TextRaw);
 
-  // If it's a clean PDF that contains real text and has 2 pages → split!
-  if (isClean && numPages === 2) {
+const isClean =
+  fuzzyIncludesPhrase(p1Clean, "DEEP", 1) ||
+  fuzzyIncludesPhrase(p1Clean, "SPARKLE", 2);
 
-    const srcPdf = await PDFLib.PDFDocument.load(bytes);
+if (isClean && numPages === 2) {
 
-    for (let p = 1; p <= 2; p++) {
-      const pageText = cleanPunc(await extractPageTextRaw(pdfJs, p));
+  // Use the **other copy** for PDF‑Lib
+  const srcPdf = await PDFLib.PDFDocument.load(bytesForPdfLib);
 
-      let desc = "";
-      if (fuzzyIncludesPhrase(pageText, "DEEP", 1)) desc = "PERFECT DEEP";
-      else if (fuzzyIncludesPhrase(pageText, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
-      else desc = "CLEAN";
+  for (let p = 1; p <= 2; p++) {
+    const txt = cleanPunc(await extractPageTextRaw(pdfJs, p));
 
-      const newName = `${address} - VOID ${desc} WORK ORDER REQUEST.pdf`;
+    let desc = "";
+    if (fuzzyIncludesPhrase(txt, "DEEP", 1)) desc = "PERFECT DEEP";
+    else if (fuzzyIncludesPhrase(txt, "SPARKLE", 2)) desc = "PERFECT SPARKLE";
+    else desc = "CLEAN";
 
-      // Split just this page
-      const newDoc = await PDFLib.PDFDocument.create();
-      const [copiedPage] = await newDoc.copyPages(srcPdf, [p - 1]);
-      newDoc.addPage(copiedPage);
-      const outBytes = await newDoc.save();
+    const newName = `${address} - VOID ${desc} WORK ORDER REQUEST.pdf`;
 
-      // Folder routing + uniquify
-      const folder = pickFolderByFilename(newName);
+    // Split single page
+    const newDoc = await PDFLib.PDFDocument.create();
+    const [copied] = await newDoc.copyPages(srcPdf, [p - 1]);
+    newDoc.addPage(copied);
+    const outBytes = await newDoc.save();
 
-      if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-      const set = seenByFolder.get(folder);
-      const uniqueName = uniquify(newName, set);
+    // Folder routing + uniquify
+    const folder = pickFolderByFilename(newName);
 
-      const target = folder ? zip.folder(folder) : zip;
-      target.file(uniqueName, outBytes);
+    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+    const unique = uniquify(newName, seenByFolder.get(folder));
 
-      if (onStep) onStep(`Clean PDF split → ${uniqueName}`);
-    }
+    const target = folder ? zip.folder(folder) : zip;
+    target.file(unique, outBytes);
 
-    // Important: STOP HERE — do NOT run the OCR work order logic
-    return;
+    if (onStep) onStep(`Clean PDF split → ${unique}`);
   }
+
+  return;  // IMPORTANT: Skip normal flow
+}
 
   // ========================================================
   // ORIGINAL WORK ORDER OCR PIPELINE (unchanged)
