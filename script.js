@@ -513,45 +513,6 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
 
   if (onStep) onStep(`Work Order → ${finalName}`);
 }
-  // -------------------------
-  // Normal Work Order Flow (OCR)
-  // -------------------------
-  // Render first page using the already‑loaded pdfJs (no second load!)
-  const page = await pdfJs.getPage(1);
-  const viewport = page.getViewport({ scale: 2.2 });
-
-  const c = document.createElement("canvas");
-  const ctx = c.getContext("2d");
-  c.width = viewport.width;
-  c.height = viewport.height;
-
-  await page.render({ canvasContext: ctx, viewport }).promise;
-
-  const pageCanvas = c;
-
-  const contractorCrop = cropFixedContractorRegion(pageCanvas);
-  const contractorText = await ocrCroppedContractor(contractorCrop);
-
-  const descCrop = cropFixedDescRegion(pageCanvas);
-  const rawDesc = await ocrCroppedSingleLine(descCrop);
-
-  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
-  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
-
-  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
-  const folder = pickFolderByFilename(newName);
-
-  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(newName, set);
-
-  const target = folder ? zip.folder(folder) : zip;
-
-  // Store original bytes unchanged
-  target.file(finalName, originalBytes);
-
-  if (onStep) onStep(`Work Order → ${finalName}`);
-}
 
   // ========================================================
   // ORIGINAL WORK ORDER OCR PIPELINE (unchanged)
