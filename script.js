@@ -415,28 +415,67 @@ function extractAddressFromHeader(text) {
 }
 
 
-async function detectDeepSparkleSections(pdfJsDoc) {
+// =======================================
+// CLASSIFY PAGE TYPE (based on highlightable text)
+// =======================================
+function classifyPageType(upperText) {
+
+  // Cleans
+  if (upperText.includes("SPARKLE")) return "PERFECT SPARKLE";
+  if (upperText.includes("DEEP"))    return "PERFECT DEEP";
+
+  // Electrical
+  if (upperText.includes("EICR") || upperText.includes("PERIODIC"))
+    return "EICR";
+
+  // Asbestos
+  if (upperText.includes("ASBESTOS SURVEY")) return "ASBESTOS SURVEY";
+  if (upperText.includes("ASBESTOS"))        return "ASBESTOS REMOVAL";
+
+  // Power / Isolator
+  if (upperText.includes("RODGERS")) return "RODGERS ISOLATOR";
+
+  // MTW
+  if (upperText.includes("MTW")) return "AC GOLD MTW";
+
+  // Recharge
+  if (upperText.includes("RECHARGE")) return "RECHARGEABLE REPAIRS";
+
+  // BMD
+  if (upperText.includes("BMD")) return "BMD WORKS";
+
+  return null;
+}
+
+// =======================================
+// DETECT ALL WORK ORDER TYPES IN ONE PDF
+// Returns: { TYPE: [pages], TYPE2: [pages], ... }
+// =======================================
+async function detectMixedWorkOrders(pdfJsDoc) {
   const total = pdfJsDoc.numPages;
-  const deepPages = [];
-  const sparklePages = [];
+  const groups = {};
 
   for (let p = 1; p <= total; p++) {
     const raw = await extractPageText(pdfJsDoc, p);
-    const U = raw.toUpperCase();
+    const upper = raw.toUpperCase();
 
-    if (U.includes("DEEP")) deepPages.push(p);
-    if (U.includes("SPARKLE")) sparklePages.push(p);
+    const type = classifyPageType(upper);
+    if (!type) continue;
+
+    if (!groups[type]) groups[type] = [];
+    groups[type].push(p);
   }
 
-  return { deepPages, sparklePages };
+  return groups;
 }
 
 // ================================
-// Work Order → add to ZIP (UPDATED WITH COMBINED CLEAN SPLITTING)
+// Work Order → add to ZIP (FULLY UPDATED)
+// Supports ANY combination of types in a single PDF
 // ================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
 
-  // Load once (both for pdf.js and pdf-lib)
+  // Load PDF for both pdf.js and pdf-lib
   const originalBytes = pdfBlobOrFile instanceof Blob
     ? await pdfBlobOrFile.arrayBuffer()
     : pdfBlobOrFile;
@@ -447,16 +486,18 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   const pdfJsDoc = await getPdfJsDoc(bytesForPdfJs);
 
   // ============================================
-  // NEW SECTION → Detect Combined Deep/Sparkle
+  // NEW: detect ANY mixed work orders inside PDF
   // ============================================
   try {
-    const { deepPages, sparklePages } = await detectDeepSparkleSections(pdfJsDoc);
-    const isCombined = deepPages.length && sparklePages.length;
+    const groups = await detectMixedWorkOrders(pdfJsDoc);
+    const types = Object.keys(groups);
 
-    if (isCombined) {
+    if (types.length > 1) {
       const srcDoc = await PDFLib.PDFDocument.load(bytesForPdfLib);
 
-      async function saveRangeToZip(pages, filename) {
+      for (const type of types) {
+        const pages = groups[type];
+
         const dest = await PDFLib.PDFDocument.create();
         const zeroIdx = pages.map(p => p - 1);
 
@@ -465,7 +506,9 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
 
         const outBytes = await dest.save();
 
+        const filename = `${address} - VOID ${type} WORK ORDER REQUEST.pdf`;
         const folder = pickFolderByFilename(filename);
+
         if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
         const set = seenByFolder.get(folder);
         const finalName = uniquify(filename, set);
@@ -476,28 +519,44 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
         if (onStep) onStep(`Split → ${finalName}`);
       }
 
-      // Deep part
-      if (deepPages.length) {
-        await saveRangeToZip(
-          deepPages,
-          `${address} - VOID PERFECT DEEP WORK ORDER REQUEST.pdf`
-        );
-      }
-
-      // Sparkle part
-      if (sparklePages.length) {
-        await saveRangeToZip(
-          sparklePages,
-          `${address} - VOID PERFECT SPARKLE WORK ORDER REQUEST.pdf`
-        );
-      }
-
-      // Already handled → don't continue into OCR mapping
-      return;
+      return; // Prevent OCR fallback
     }
+
   } catch (err) {
-    console.warn("Combined clean detection skipped:", err);
+    console.warn("Mixed work order detection failed:", err);
   }
+
+  // ======================================================
+  // STANDARD WORK ORDER (OCR DESCRIPTION + CONTRACTOR)
+  // ======================================================
+  const pageCanvas = await renderPdfPageToCanvas(pdfBlobOrFile, 1, 2.2);
+
+  const contractorCrop = cropFixedContractorRegion(pageCanvas);
+  const contractorText = await ocrCroppedContractor(contractorCrop);
+
+  const descCrop = cropFixedDescRegion(pageCanvas);
+  const rawDesc = await ocrCroppedSingleLine(descCrop);
+
+  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
+  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
+
+  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
+  const folder = pickFolderByFilename(newName);
+
+  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+  const set = seenByFolder.get(folder);
+  const finalName = uniquify(newName, set);
+
+  const target = folder ? zip.folder(folder) : zip;
+
+  const buf = pdfBlobOrFile instanceof Blob
+    ? await pdfBlobOrFile.arrayBuffer()
+    : pdfBlobOrFile;
+
+  target.file(finalName, buf);
+
+  if (onStep) onStep(`Work Order → ${finalName}`);
+}
 
   // ======================================================
   // STANDARD WORK ORDER → OCR DESCRIPTION + CONTRACTOR
