@@ -2,6 +2,101 @@
 // PERFORMANCE LAYER — PDF & TEXT CACHING
 // ===============================================================
 
+// ===============================================================
+// CORE HELPERS — REQUIRED BY ALL OPTIMISED CODE BELOW
+// ===============================================================
+
+// Basic sanitisation helpers
+const toUpper = s => (s || "").toUpperCase();
+
+function cleanPunc(s) {
+  return toUpper(s)
+    .replace(/[^A-Z0-9'\s]/g, " ") // allow apostrophes
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Preserve commas (for address) but make filename-safe
+function toFilenameAddressKeepCommas(s) {
+  s = (s || "").toUpperCase().trim();
+  s = s.replace(/[\\\/:*?"<>|]+/g, " ");
+  s = s.replace(/[^A-Z0-9,'\s]/g, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.replace(/\s+,/g, ",").replace(/,(\S)/g, ", $1");
+  return s.replace(/[,\s]+$/g, "").trim();
+}
+
+// Ensures filenames don’t collide
+function uniquify(name, existing) {
+  if (!existing.has(name)) {
+    existing.add(name);
+    return name;
+  }
+  const extIdx = name.lastIndexOf(".");
+  const base = extIdx >= 0 ? name.slice(0, extIdx) : name;
+  const ext = extIdx >= 0 ? name.slice(extIdx) : "";
+  let i = 2;
+  while (existing.has(`${base} (${i})${ext}`)) i++;
+  const unique = `${base} (${i})${ext}`;
+  existing.add(unique);
+  return unique;
+}
+
+// Natural sorting
+function naturalSort(a, b) {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
+// Levenshtein distance
+function levenshtein(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function tokenize(str) {
+  return cleanPunc(str).split(/\s+/).filter(Boolean);
+}
+
+// Fuzzy phrase search
+function fuzzyIncludesPhrase(haystack, phrase, maxDist) {
+  const hayTokens = tokenize(haystack);
+  const phraseTokens = tokenize(phrase);
+  if (!hayTokens.length || !phraseTokens.length) return false;
+
+  const windowSize = phraseTokens.length;
+  const target = phraseTokens.join(" ");
+  for (let i = 0; i <= hayTokens.length - windowSize; i++) {
+    const window = hayTokens.slice(i, i + windowSize).join(" ");
+    if (levenshtein(window, target) <= maxDist) return true;
+  }
+  return false;
+}
+
+// Blank-text checker for page detection
+function looksBlankText(cleaned) {
+  return !cleaned || cleaned.trim().length < 5;
+}
+
+// Simple substring matcher
+function includesAny(cleaned, arr) {
+  const U = toUpper(cleaned);
+  return arr.some(s => U.includes(toUpper(s)));
+}
+
 // Store cached objects so pdf.js and pdf-lib do NOT reload constantly
 const pdfJsCache = new WeakMap();
 const pdfLibCache = new WeakMap();
