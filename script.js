@@ -190,17 +190,16 @@ async function renderPdfPageToCanvasCached(file, pageNum = 1, scale = 1.35) {
 function enhanceForOcr(srcCanvas) {
   let canvas, ctx;
 
-  // OffscreenCanvas path
-  if (typeof OffscreenCanvas !== "undefined" && (srcCanvas instanceof OffscreenCanvas || srcCanvas.transferToImageBitmap)) {
+  // Make a same-size output canvas the correct way
+  if (typeof OffscreenCanvas !== "undefined" && srcCanvas instanceof OffscreenCanvas) {
     canvas = new OffscreenCanvas(srcCanvas.width, srcCanvas.height);
-    ctx = canvas.getContext("2d");
   } else {
     canvas = document.createElement("canvas");
     canvas.width = srcCanvas.width;
     canvas.height = srcCanvas.height;
-    ctx = canvas.getContext("2d");
   }
 
+  ctx = canvas.getContext("2d");
   ctx.drawImage(srcCanvas, 0, 0);
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
