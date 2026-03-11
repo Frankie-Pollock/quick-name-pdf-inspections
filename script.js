@@ -256,6 +256,44 @@ async function getOcrWorker() {
   return ocrWorkerPromise;
 }
 
+// ===============================================================
+// FAST PAGE-1 RAW TEXT READER (NO OCR)
+// ===============================================================
+async function tryReadPage1RawTextOnly(file) {
+  try {
+    const pdfJsDoc = await getPdfJsCached(file);
+    const page = await pdfJsDoc.getPage(1);
+
+    const tc = await page.getTextContent({
+      normalizeWhitespace: false,
+      disableNormalization: true
+    });
+
+    const raw = (tc.items || [])
+      .map(i => i.str || "")
+      .join(" ");
+
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
+// ===============================================================
+// FAST ADDRESS FINDER (NO OCR) — returns "" if not found
+// ===============================================================
+async function fastFindAddress(pdfFiles) {
+  for (const f of pdfFiles) {
+    const raw = await tryReadPage1RawTextOnly(f);
+    const clean = cleanPunc(raw);
+
+    if (isInspectionPackHeader(clean)) {
+      return getPackAddressFromHeaderText(raw);
+    }
+  }
+  return "";
+}
+
 async function ocrCanvasWithWorker(canvas, psm = 6) {
   const worker = await getOcrWorker();
   await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
