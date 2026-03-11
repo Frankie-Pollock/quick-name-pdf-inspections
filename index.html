@@ -10,100 +10,256 @@
 
     body {
       font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-      margin: 0;
-      padding: 0;
+      margin: 0; padding: 0;
       background: #f5f7fa;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      color: #333;
+      display: flex; justify-content: center; align-items: center;
+      height: 100vh; color: #333;
+      transition: background 0.3s ease, color 0.3s ease;
     }
 
     .container {
       text-align: center;
-      max-width: 600px;
+      max-width: 700px;
       padding: 20px;
+      position: relative;
+      z-index: 5;
     }
 
     h1 {
       margin: 0 0 12px;
       font-size: 28px;
       font-weight: 600;
-      color: #1f1f1f;
     }
 
     p.subtitle {
-      margin: 0 0 28px;
+      margin: 0 0 18px;
       font-size: 15px;
       color: #555;
     }
 
-    /* Drag zone */
+    /* ----------------- Dropzone ----------------- */
     #dropzone {
       border: 3px dashed #0078d4;
       border-radius: 12px;
-      padding: 50px 30px;
+      padding: 40px 24px;
       background: #ffffff;
       cursor: pointer;
       font-size: 18px;
-      font-weight: 500;
+      font-weight: 600;
       color: #0078d4;
       transition: 0.25s ease;
+      user-select: none;
+    }
+    #dropzone:hover { background: #eef6ff; }
+    #dropzone.dragging { background: #e1f0ff; border-color: #005a9e; }
+
+    /* --------------- Queue controls --------------- */
+    #queueControls { margin-top: 14px; }
+
+    #processBtn {
+      background:#0078d4;
+      color:#fff;
+      border:none;
+      padding:8px 14px;
+      border-radius:6px;
+      cursor:pointer;
+      margin-right:8px;
+      font-weight:600;
+    }
+    #processBtn:hover { background:#0069bd; }
+
+    #clearBtn {
+      background:#ccc;
+      color:#000;
+      border:none;
+      padding:8px 14px;
+      border-radius:6px;
+      cursor:pointer;
+    }
+    #clearBtn:hover { background:#bdbdbd; }
+
+    #queueList {
+      margin-top: 10px;
+      font-size: 13px;
+      text-align: left;
     }
 
-    #dropzone:hover {
-      background: #eef6ff;
+    .queue-item {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 8px;
+      padding:6px 10px;
+      border:1px solid #e5e5e5;
+      border-radius:6px;
+      margin-bottom:6px;
+      background:#fff;
+    }
+
+    .queue-name {
+      flex: 1 1 auto;
+      max-width:75%;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      color:#333;
+    }
+
+    .rm-btn {
+      background:#eee;
+      border:1px solid #ddd;
+      color:#333;
+      padding:3px 8px;
+      border-radius:4px;
+      cursor:pointer;
+      white-space: nowrap;
+    }
+    .rm-btn:hover { background:#e2e2e2; }
+
+    /* ========================================================= */
+    /* TEXT-ONLY TOGGLES                                         */
+    /* ========================================================= */
+    #themeButton {
+      position: fixed;
+      top: 40px;
+      left: 40px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 2px solid #0078d4;
+      background: white;
+      color: #0078d4;
+      font-weight: 700;
+      cursor: pointer;
+      z-index: 9999;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+    html.dark #themeButton {
+      background: #0078d4;
+      color: white;
       border-color: #005a9e;
     }
 
-    #dropzone.dragging {
-      background: #e1f0ff;
-      border-color: #005a9e;
+
+    /* ========================================================= */
+    /* DARK MODE OVERRIDES — High‑contrast, accessible           */
+    /* ========================================================= */
+    html.dark body { background: #1e1e1e; color: #e0e0e0; }
+    html.dark h1 { color: #e8e8e8; }
+    html.dark p.subtitle { color: #c9c9c9; }
+
+    /* Dropzone (dark) */
+    html.dark #dropzone {
+      background: #2b2b2f !important;
+      color: #66aaff !important;
+      border-color: #66aaff !important;
+    }
+    html.dark #dropzone:hover { background: #333 !important; }
+
+    /* Queue items (dark) */
+    html.dark .queue-item {
+      background: #232329;
+      border-color: #3a3a40;
+      color: #e8e8ea;
+    }
+    html.dark .queue-item .queue-name { color: #e8e8ea; }
+
+    /* Row remove button (dark) */
+    html.dark .queue-item .rm-btn {
+      background: #35363d;
+      color: #f3f3f3;
+      border: 1px solid #4d4f58;
+    }
+    html.dark .queue-item .rm-btn:hover {
+      background: #4a4c56;
+      border-color: #5a5d68;
     }
 
-    /* Hide old wizard completely */
-    #wizard {
-      display: none !important;
-      visibility: hidden !important;
+    /* Action buttons (dark) */
+    html.dark #processBtn { background: #1f6feb; }
+    html.dark #processBtn:hover { background: #1a5fd0; }
+    html.dark #clearBtn {
+      background: #35363d;
+      color: #f3f3f3;
+      border: 1px solid #4d4f58;
+    }
+    html.dark #clearBtn:hover { background: #41434d; }
+
+    /* Powerman Andy button in dark mode */
+    html.dark #andyButton {
+      background: #2b2b2f;
+      color: #ffc857;
+      border-color: #ffc857;
+    }
+    html.dark #andyButton:hover { background: #34353c; }
+    html.dark #andyButton.active {
+      background: #ffa600;
+      color: #111;
+      border-color: #ffb733;
     }
 
-    /* Hide the unused address field */
-    #address {
-      display: none !important;
-    }
+    /* ========================================================= */
+
+    /* Ensure the app content stays above background/overlay */
+    body > * { position: relative; z-index: 1; }
   </style>
 </head>
 
 <body>
 
-<div class="container">
-  <h1>VOID Pack & Work Order Processor</h1>
-  <p class="subtitle">Drop an Inspection Pack or Work Orders here — processing will run automatically.</p>
+  <!-- TEXT THEME TOGGLES -->
+  <button id="themeButton">DARK MODE</button>
 
-  <div id="dropzone">
-    Drag &amp; Drop PDF or ZIP Here
+  <div class="container">
+    <h1>VOID Pack & Work Order Processor</h1>
+    <p class="subtitle">Drag PDFs/ZIPs into the box to build a queue. Press <strong>Go</strong> when ready.</p>
+
+    <!-- SINGLE dropzone -->
+    <div id="dropzone">Drag & Drop PDF or ZIP Here</div>
+
+    <!-- Queue controls -->
+    <div id="queueControls">
+      <button id="processBtn">Go</button>
+      <button id="clearBtn">Clear</button>
+      <div id="queueList"></div>
+    </div>
   </div>
-</div>
 
-<!-- PDF.js ES Module -->
-<script type="module">
-  import * as pdfjsLib from './pdf.mjs';
-  window.pdfjsLib = pdfjsLib;
-  pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
-</script>
+  <!-- PDF.js ES Module -->
+  <script type="module">
+    import * as pdfjsLib from './pdf.mjs';
+    window.pdfjsLib = pdfjsLib;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
+  </script>
 
-<!-- JSZip -->
-<script src="./jszip.min.js"></script>
+  <!-- JSZip -->
+  <script src="./jszip.min.js"></script>
 
-<!-- Tesseract.js -->
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- Tesseract.js -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
-<!-- pdf-lib -->
-<script src="./pdf-lib.min.js"></script>
+  <!-- pdf-lib -->
+  <script src="./pdf-lib.min.js"></script>
 
-<!-- Your final script.js (auto mode) -->
-<script src="./script.js"></script>
+  <!-- Your main logic -->
+  <script src="./script.js"></script>
+
+  <!-- Theme + Powerman Andy Logic -->
+  <script>
+    const root = document.documentElement;
+    const themeButton = document.getElementById("themeButton");
+
+
+    /* -------- Dark Mode -------- */
+    if (localStorage.getItem("theme") === "dark") {
+      root.classList.add("dark");
+      themeButton.textContent = "LIGHT MODE";
+    }
+    themeButton.addEventListener("click", () => {
+      const isDark = root.classList.toggle("dark");
+      themeButton.textContent = isDark ? "LIGHT MODE" : "DARK MODE";
+      localStorage.setItem("theme", isDark ? "dark" : "light");
+    });
+  </script>
 
 </body>
 </html>
