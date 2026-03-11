@@ -558,38 +558,6 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   if (onStep) onStep(`Work Order → ${finalName}`);
 }
 
-  // ======================================================
-  // STANDARD WORK ORDER → OCR DESCRIPTION + CONTRACTOR
-  // ======================================================
-  const pageCanvas = await renderPdfPageToCanvas(pdfBlobOrFile, 1, 2.2);
-
-  const contractorCrop = cropFixedContractorRegion(pageCanvas);
-  const contractorText = await ocrCroppedContractor(contractorCrop);
-
-  const descCrop = cropFixedDescRegion(pageCanvas);
-  const rawDesc = await ocrCroppedSingleLine(descCrop);
-
-  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
-  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
-
-  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
-  const folder = pickFolderByFilename(newName);
-
-  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(newName, set);
-
-  const target = folder ? zip.folder(folder) : zip;
-
-  const buf = pdfBlobOrFile instanceof Blob
-    ? await pdfBlobOrFile.arrayBuffer()
-    : pdfBlobOrFile;
-
-  target.file(finalName, buf);
-
-  if (onStep) onStep(`Work Order → ${finalName}`);
-}
-
 // =======================================================
 // Inspection Pack Splitter → append parts into ZIP
 // =======================================================
