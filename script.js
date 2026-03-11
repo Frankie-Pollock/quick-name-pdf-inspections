@@ -686,6 +686,61 @@ async function addWorkOrderToZipFast(plan, zip, address, seenByFolder, onStep) {
   target.file(finalName, buf);
   if (onStep) onStep(`Work Order → ${finalName}`);
 }
+
+// ===============================================================
+// UI: Minimal progress overlay
+// ===============================================================
+function ensureProgressUI() {
+  if (document.getElementById("autoProgressWrap")) return;
+
+  const wrap = document.createElement("div");
+  wrap.id = "autoProgressWrap";
+  wrap.style.cssText = `
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,.45);
+    z-index: 999999;
+    font-family: system-ui,Segoe UI,Arial,sans-serif;
+  `;
+  wrap.innerHTML = `
+    <div style="width: min(560px,90vw); background:#fff; border-radius:10px; padding:20px 22px; box-shadow: 0 10px 30px rgba(0,0,0,.3)">
+      <div style="font-weight:600; margin-bottom:10px; font-size:18px">Processing…</div>
+      <div id="autoStatus" style="font-size:13px;color:#333;margin-bottom:12px">Starting…</div>
+
+      <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden">
+        <div id="autoBar" style="height:100%;width:0%;background:#0078d4;transition:width .2s ease"></div>
+      </div>
+
+      <div id="autoPct" style="margin-top:8px;font-size:12px;color:#666">0%</div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+}
+
+function setProgress(current, total, msg) {
+  ensureProgressUI();
+  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+
+  const bar = document.getElementById("autoBar");
+  const pctLbl = document.getElementById("autoPct");
+  const st = document.getElementById("autoStatus");
+
+  if (bar) bar.style.width = pct + "%";
+  if (pctLbl) pctLbl.textContent = `${pct}%`;
+  if (st && msg) st.textContent = msg;
+}
+
+function finishProgress() {
+  setProgress(1, 1, "Done");
+  setTimeout(() => {
+    const wrap = document.getElementById("autoProgressWrap");
+    if (wrap) wrap.remove();
+  }, 600);
+}
+
 // ===============================================================
 // MAIN PIPELINE (Fast, cached, portrait-scan aware)
 // ===============================================================
