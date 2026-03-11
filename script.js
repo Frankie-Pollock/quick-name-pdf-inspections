@@ -414,12 +414,106 @@ function extractAddressFromHeader(text) {
   return working;
 }
 
+
+async function detectDeepSparkleSections(pdfJsDoc) {
+  const total = pdfJsDoc.numPages;
+  const deepPages = [];
+  const sparklePages = [];
+
+  for (let p = 1; p <= total; p++) {
+    const txt = await extractPageText(pdfJsDoc, p);
+    const U = toUpper(txt);
+
+    const isDeep =
+      U.includes("PERFECT DEEP") ||
+      U.includes("DEEP CLEAN") ||
+      U.includes("DEEP CLEANING");
+
+    const isSparkle =
+      U.includes("PERFECT SPARKLE") ||
+      U.includes("SPARKLE CLEAN") ||
+      U.includes("SPARKLE CLEANS");
+
+    if (isDeep)    deepPages.push(p);
+    if (isSparkle) sparklePages.push(p);
+  }
+
+  return { deepPages, sparklePages };
+}
+
 // ================================
-// Headless Work Order → add to ZIP
+// Work Order → add to ZIP (UPDATED WITH COMBINED CLEAN SPLITTING)
 // ================================
 async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onStep) {
-  // 1) Extract description + contractor from page 1 crops
+
+  // Load once (both for pdf.js and pdf-lib)
+  const originalBytes = pdfBlobOrFile instanceof Blob
+    ? await pdfBlobOrFile.arrayBuffer()
+    : pdfBlobOrFile;
+
+  const bytesForPdfJs  = originalBytes.slice(0);
+  const bytesForPdfLib = originalBytes.slice(0);
+
+  const pdfJsDoc = await getPdfJsDoc(bytesForPdfJs);
+
+  // ============================================
+  // NEW SECTION → Detect Combined Deep/Sparkle
+  // ============================================
+  try {
+    const { deepPages, sparklePages } = await detectDeepSparkleSections(pdfJsDoc);
+    const isCombined = deepPages.length && sparklePages.length;
+
+    if (isCombined) {
+      const srcDoc = await PDFLib.PDFDocument.load(bytesForPdfLib);
+
+      async function saveRangeToZip(pages, filename) {
+        const dest = await PDFLib.PDFDocument.create();
+        const zeroIdx = pages.map(p => p - 1);
+
+        const copied = await dest.copyPages(srcDoc, zeroIdx);
+        copied.forEach(pg => dest.addPage(pg));
+
+        const outBytes = await dest.save();
+
+        const folder = pickFolderByFilename(filename);
+        if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+        const set = seenByFolder.get(folder);
+        const finalName = uniquify(filename, set);
+
+        const target = folder ? zip.folder(folder) : zip;
+        target.file(finalName, outBytes);
+
+        if (onStep) onStep(`Split → ${finalName}`);
+      }
+
+      // Deep part
+      if (deepPages.length) {
+        await saveRangeToZip(
+          deepPages,
+          `${address} - VOID PERFECT DEEP WORK ORDER REQUEST.pdf`
+        );
+      }
+
+      // Sparkle part
+      if (sparklePages.length) {
+        await saveRangeToZip(
+          sparklePages,
+          `${address} - VOID PERFECT SPARKLE WORK ORDER REQUEST.pdf`
+        );
+      }
+
+      // Already handled → don't continue into OCR mapping
+      return;
+    }
+  } catch (err) {
+    console.warn("Combined clean detection skipped:", err);
+  }
+
+  // ======================================================
+  // STANDARD WORK ORDER → OCR DESCRIPTION + CONTRACTOR
+  // ======================================================
   const pageCanvas = await renderPdfPageToCanvas(pdfBlobOrFile, 1, 2.2);
+
   const contractorCrop = cropFixedContractorRegion(pageCanvas);
   const contractorText = await ocrCroppedContractor(contractorCrop);
 
@@ -429,31 +523,6 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   const mapped = mapWorkOrderDescription(rawDesc, contractorText);
   const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
 
-async function detectDeepSparkleSections(pdfJsDoc) {
-  const total = pdfJsDoc.numPages;
-
-  // Pages where Deep text is found
-  const deepPages = [];
-  // Pages where Sparkle text is found
-  const sparklePages = [];
-
-  for (let p = 1; p <= total; p++) {
-    const txt = await extractPageText(pdfJsDoc, p); // uses your existing highlightable text extractor
-
-    const clean = toUpper(txt);
-
-    if (clean.includes("DEEP CLEAN") || clean.includes("PERFECT DEEP")) {
-      deepPages.push(p);
-    }
-    if (clean.includes("SPARKLE") || clean.includes("PERFECT SPARKLE")) {
-      sparklePages.push(p);
-    }
-  }
-
-  return { deepPages, sparklePages };
-}
-  
-  // 2) Build target filename (same pattern previously)
   const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
   const folder = pickFolderByFilename(newName);
 
@@ -463,8 +532,10 @@ async function detectDeepSparkleSections(pdfJsDoc) {
 
   const target = folder ? zip.folder(folder) : zip;
 
-  // Store original bytes (unchanged)
-  const buf = pdfBlobOrFile instanceof Blob ? await pdfBlobOrFile.arrayBuffer() : pdfBlobOrFile;
+  const buf = pdfBlobOrFile instanceof Blob
+    ? await pdfBlobOrFile.arrayBuffer()
+    : pdfBlobOrFile;
+
   target.file(finalName, buf);
 
   if (onStep) onStep(`Work Order → ${finalName}`);
