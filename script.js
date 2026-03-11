@@ -136,8 +136,8 @@ async function extractAllTextCached(pdfJsDoc, file) {
 
   for (let p = 1; p <= pages; p++) {
     const page = await pdfJsDoc.getPage(p);
-    const tc = await page.getTextContent();
-    out[p] = tc.items.map(i => i.str || "").join(" ");
+    const tc = await page.getTextContent({ normalizeWhitespace: false, disableNormalization: true });
+    out[p] = (tc.items || []).map(i => i.str || "").join(" ");
   }
 
   textCache.set(file, out);
@@ -183,15 +183,15 @@ async function renderPdfPageToCanvasCached(file, pageNum = 1, scale = 1.35) {
 }
 
 // ===============================================================
-// OCR UTILS (unchanged except using cached canvas)
+// OCR UTILS
 // ===============================================================
 
-// Greyscale + auto-level improvements remain identical
+// Greyscale + auto-level
 function enhanceForOcr(srcCanvas) {
   let canvas, ctx;
 
   // OffscreenCanvas path
-  if (typeof OffscreenCanvas !== "undefined" && srcCanvas instanceof OffscreenCanvas) {
+  if (typeof OffscreenCanvas !== "undefined" && (srcCanvas instanceof OffscreenCanvas || srcCanvas.transferToImageBitmap)) {
     canvas = new OffscreenCanvas(srcCanvas.width, srcCanvas.height);
     ctx = canvas.getContext("2d");
   } else {
@@ -237,43 +237,55 @@ function enhanceForOcr(srcCanvas) {
   return canvas;
 }
 
-// OCR single line remains the same EXCEPT it now uses enhanced canvas
-async function ocrCroppedSingleLineFast(canvas) {
-  const enhanced = enhanceForOcr(canvas);
-
-  const r1 = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 7
-  });
-
-  let lines = (r1?.data?.text || "")
-    .split(/\r?\n/)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  if (lines.length) return cleanPunc(lines[0]);
-
-  const r2 = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6
-  });
-
-  lines = (r2?.data?.text || "")
-    .split(/\r?\n/)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  return lines.length ? cleanPunc(lines[0]) : "";
+// ===============================================================
+// OCR WORKER (shared) + OCR helpers for full-page/ROI
+// ===============================================================
+let ocrWorkerPromise = null;
+async function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = (async () => {
+      const worker = await Tesseract.createWorker({ logger: null });
+      await worker.loadLanguage('eng');
+      await worker.initialize('eng');
+      await worker.setParameters({
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+      });
+      return worker;
+    })();
+  }
+  return ocrWorkerPromise;
 }
 
-// Contractor OCR using same fast path
-async function ocrContractorFast(canvas) {
+async function ocrCanvasWithWorker(canvas, psm = 6) {
+  const worker = await getOcrWorker();
+  await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
   const enhanced = enhanceForOcr(canvas);
-  const res = await Tesseract.recognize(enhanced, "eng", {
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-    tessedit_pageseg_mode: 6
-  });
-  return cleanPunc(res?.data?.text || "");
+  const { data: { text } } = await worker.recognize(enhanced);
+  const raw = (text || "").replace(/\s+/g, " ").trim();
+  return { raw, clean: cleanPunc(raw) };
+}
+
+async function ocrWholePageText(file, pageNum = 1, targetWidth = 1400) {
+  const pdfJsDoc = await getPdfJsCached(file);
+  const page = await pdfJsDoc.getPage(pageNum);
+  const vp1 = page.getViewport({ scale: 1.0 });
+  const scale = Math.max(0.8, Math.min(2.0, targetWidth / Math.max(1, vp1.width)));
+  const canvas = await renderPdfPageToCanvasCached(file, pageNum, scale);
+  return ocrCanvasWithWorker(canvas, 6);
+}
+
+// OCR single line (uses worker)
+async function ocrCroppedSingleLineFast(canvas) {
+  const { clean } = await ocrCanvasWithWorker(canvas, 7);
+  if (clean) return clean;
+  const fallback = await ocrCanvasWithWorker(canvas, 6);
+  return fallback.clean || "";
+}
+
+// Contractor OCR (uses worker)
+async function ocrContractorFast(canvas) {
+  const { clean } = await ocrCanvasWithWorker(canvas, 6);
+  return clean || "";
 }
 
 // ===============================================================
@@ -336,20 +348,14 @@ function cropFixedContractorRegion(pageCanvas) {
 // TEXT/HEADER DETECTION (uses cached text; OCR fallback only if needed)
 // ===============================================================
 
-// Reuse your existing helpers from your script:
-//   toUpper, cleanPunc, toFilenameAddressKeepCommas,
-//   looksBlankText, includesAny, naturalSort, uniquify,
-//   tokenize, levenshtein, fuzzyIncludesPhrase
-// (Do NOT redefine them here to avoid duplication.)
-
 // Inspection Pack header detector (cleaned, uppercase)
 function isInspectionPackHeader(cleanedText) {
   const t = toUpper(cleanedText || "");
   return (
     t.includes("INSPECTION CHECKLIST") ||
     t.includes("INTERNAL VOID PACK") ||
-    t.includes("MULTI TRADE WORKS") ||   // cleaned (no hyphen)
-    t.includes("MULTI-TRADE WORKS")     // as printed (safe)
+    t.includes("MULTI TRADE WORKS") ||
+    t.includes("MULTI-TRADE WORKS")
   );
 }
 
@@ -391,6 +397,12 @@ function extractAddressFromHeader(text) {
   return working;
 }
 
+// Derive ADDRESS from header text (formatted for filename)
+function getPackAddressFromHeaderText(p1Raw) {
+  const extracted = extractAddressFromHeader(p1Raw);
+  return toFilenameAddressKeepCommas(extracted);
+}
+
 // Single pass classifier (no extra pdf.js calls during loop)
 function classifyPageType(upperText) {
   if (upperText.includes("SPARKLE")) return "PERFECT SPARKLE";
@@ -426,140 +438,423 @@ async function detectMixedWorkOrdersCached(pdfJsDoc, textByPage) {
 }
 
 // ===============================================================
-// OCR HELPERS (fast path already in Message 1)
-// - ocrCroppedSingleLineFast
-// - ocrContractorFast
-// - enhanceForOcr
-// - renderPdfPageToCanvasCached
+// PORTRAIT EMAIL PACK DETECTION (scanned, separate PDFs)
 // ===============================================================
 
-// Read header text for page 1 with OCR fallback using cached canvas
-async function getHeaderTextsCached(file) {
-  const pdfJsDoc = await getPdfJsCached(file);
-  const textByPage = await extractAllTextCached(pdfJsDoc, file);
+async function isPortraitAndScanned(file) {
+  try {
+    const pdfJsDoc = await getPdfJsCached(file);
+    const page = await pdfJsDoc.getPage(1);
+    const vp = page.getViewport({ scale: 1.0 });
+    const portrait = vp.height >= vp.width;
 
-  let p1Raw = textByPage[1] || "";
-  let p1Clean = cleanPunc(p1Raw);
+    const tc = await page.getTextContent({ 
+      normalizeWhitespace: false, 
+      disableNormalization: true 
+    });
+    const txt = (tc.items || []).map(i => i.str || "").join(" ");
+    const scanned = looksBlankText(cleanPunc(txt));
 
-  // OCR fallback for scanned packs
-  if (looksBlankText(p1Clean)) {
-    try {
-      const pageCanvas = await renderPdfPageToCanvasCached(file, 1, 1.35);
-      const enhanced = enhanceForOcr(pageCanvas);
-      const ocrRes = await Tesseract.recognize(enhanced, "eng", {
-        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-        tessedit_pageseg_mode: 6
-      });
-      const ocrText = (ocrRes?.data?.text || "").replace(/\s+/g, " ").trim();
-      if (ocrText && ocrText.length > 5) {
-        p1Raw = ocrText;           // keep punctuation for address
-        p1Clean = cleanPunc(ocrText);
+    return { portrait, scanned };
+  } catch {
+    return { portrait: false, scanned: false };
+  }
+}
+
+function classifyPortraitByOcr(cleanUpper) {
+  const U = (cleanUpper || "").toUpperCase();
+
+  if (isInspectionPackHeader(U)) return "INSPECTION CHECKLIST";
+
+  if (U.includes("MULTI TRADE WORKS") || 
+      U.includes("MULTI-TRADE WORKS") ||
+      U.includes("MTW"))
+    return "AC GOLD MTW";
+
+  if (U.includes("BMD WORKS REQUIRED") ||
+      U.includes("BMD WORKS") ||
+      U.includes("BMD"))
+    return "BMD WORKS";
+
+  if (U.includes("RECHARGE") || U.includes("RECHARGEABLE"))
+    return "RECHARGEABLE REPAIRS";
+
+  return "";
+}
+
+// Save the whole file (for portrait scanned mode)
+async function saveWholeFileToZip(file, filename, zip, seenByFolder, onStep) {
+  const folder = pickFolderByFilename(filename);
+  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+  const set = seenByFolder.get(folder);
+
+  const finalName = uniquify(filename, set);
+  const target = getZipTarget(zip, folder);
+  const buf = await file.arrayBuffer();
+  target.file(finalName, buf);
+
+  if (onStep) onStep(`Saved → ${finalName}`);
+}
+
+// Detect portrait email-pack mode (separate PDFs)
+async function detectPortraitEmailPack(pdfFiles) {
+  const portraitGroup = [];
+
+  for (const f of pdfFiles) {
+    const { portrait, scanned } = await isPortraitAndScanned(f);
+    if (!portrait || !scanned) break;
+    portraitGroup.push(f);
+  }
+
+  if (!portraitGroup.length) return null;
+
+  // OCR first portrait page to detect address
+  const { raw: firstRaw, clean: firstClean } = await ocrWholePageText(portraitGroup[0]);
+
+  if (!isInspectionPackHeader(firstClean)) {
+    return null;
+  }
+
+  const address = getPackAddressFromHeaderText(firstRaw) || "";
+
+  const items = [];
+  let mtwIdx = 0, bmdIdx = 0;
+
+  for (let i = 0; i < portraitGroup.length; i++) {
+    const file = portraitGroup[i];
+    const { clean } = await ocrWholePageText(file);
+
+    const kind = (i === 0)
+      ? "INSPECTION CHECKLIST"
+      : classifyPortraitByOcr(clean);
+
+    let filename;
+
+    if (kind === "INSPECTION CHECKLIST") {
+      filename = `${address} - VOID INSPECTION CHECKLIST.pdf`;
+
+    } else if (kind === "AC GOLD MTW") {
+      mtwIdx++;
+      filename = `${address} - VOID AC GOLD MTW (${mtwIdx}).pdf`;
+
+    } else if (kind === "BMD WORKS") {
+      bmdIdx++;
+      filename = `${address} - VOID BMD WORKS (${bmdIdx}).pdf`;
+
+    } else if (kind === "RECHARGEABLE REPAIRS") {
+      filename = `${address} - VOID_RECHARGEABLE_Works.pdf`;
+
+    } else {
+      filename = `${address} - VOID UNKNOWN PACK PAGE (${i + 1}).pdf`;
+    }
+
+    items.push({ file, kind, filename });
+  }
+
+  return {
+    address,
+    items,
+    consumedCount: portraitGroup.length
+  };
+}
+
+async function processPortraitPackToZip(plan, zip, seenByFolder, onStep) {
+  const { items } = plan;
+  for (const it of items) {
+    await saveWholeFileToZip(it.file, it.filename, zip, seenByFolder, onStep);
+  }
+}
+
+// ===============================================================
+// Inspection Pack Splitter → append parts into ZIP (Optimised)
+// ===============================================================
+
+async function appendInspectionPackToZipFast(plan, zip, address, seenByFolder, onStep) {
+  const { pdfJsDoc, pdfLibDoc, textByPage } = plan;
+  const total = pdfJsDoc.numPages;
+
+  async function saveSingle(pageIndex1, filename) {
+    await saveSinglePageFromDoc(pdfLibDoc, pageIndex1, filename, zip, seenByFolder, onStep);
+  }
+
+  const p1Clean = cleanPunc(textByPage[1] || "");
+
+  const isAcGold =
+    p1Clean.includes("MULTI TRADE WORKS") ||
+    p1Clean.includes("MULTI-TRADE WORKS");
+
+  await saveSingle(1, `${address} - VOID INSPECTION CHECKLIST.pdf`);
+
+  if (isAcGold) {
+    let lastText = "";
+    if (total >= 2) {
+      lastText = cleanPunc(textByPage[total] || "");
+    }
+    const lastIsBmd = lastText.includes("BMD WORKS REQUIRED");
+    const mtwEnd = lastIsBmd ? total - 1 : total;
+
+    let mtwIdx = 0;
+    for (let p = 2; p <= mtwEnd; p++) {
+      const txt = cleanPunc(textByPage[p] || "");
+      if (looksBlankText(txt)) continue;
+      mtwIdx++;
+      await saveSingle(p, `${address} - VOID AC GOLD MTW (${mtwIdx}).pdf`);
+    }
+
+    if (lastIsBmd) {
+      await saveSingle(total, `${address} - VOID BMD WORKS.pdf`);
+    }
+
+  } else {
+    let startBmdFrom = 2;
+    let bmdIdx = 0;
+
+    if (total >= 2) {
+      const p2Text = cleanPunc(textByPage[2] || "");
+      const p2Blank = looksBlankText(p2Text);
+      const p2Recharge = p2Text.includes("RECHARGE WORK") ||
+                         p2Text.includes("RECHARGEABLE WORK");
+
+      if (!p2Blank && p2Recharge) {
+        await saveSingle(2, `${address} - VOID_RECHARGEABLE_Works.pdf`);
+        startBmdFrom = 3;
+
+      } else if (p2Blank) {
+        startBmdFrom = 3;
+
+      } else {
+        startBmdFrom = 2;
       }
-    } catch (e) {
-      console.warn("OCR fallback for pack header failed:", e);
+    }
+
+    for (let p = startBmdFrom; p <= total; p++) {
+      const txt = cleanPunc(textByPage[p] || "");
+      if (looksBlankText(txt)) continue;
+      bmdIdx++;
+      await saveSingle(p, `${address} - VOID BMD WORKS (${bmdIdx}).pdf`);
+    }
+  }
+}
+
+// ===============================================================
+// Work Order → add to ZIP (Optimised, cached)
+// ===============================================================
+
+async function addWorkOrderToZipFast(plan, zip, address, seenByFolder, onStep) {
+  const { file, pdfJsDoc, pdfLibDoc, textByPage } = plan;
+
+  let usedSplit = false;
+  try {
+    const groups = await detectMixedWorkOrdersCached(pdfJsDoc, textByPage);
+    const types = Object.keys(groups);
+
+    if (types.length > 1) {
+      for (const type of types) {
+        const pages = groups[type];
+        const zeroIdx = pages.map(p => p - 1);
+        const filename = `${address} - VOID ${type} WORK ORDER REQUEST.pdf`;
+        await savePageSetFromDoc(pdfLibDoc, zeroIdx, filename, zip, seenByFolder, onStep);
+      }
+      usedSplit = true;
+    }
+  } catch (err) {
+    console.warn("Mixed work order detection failed:", err);
+  }
+
+  if (usedSplit) return;
+
+  const pageCanvas = await renderPdfPageToCanvasCached(file, 1, 1.35);
+  const contractorCrop = cropFixedContractorRegion(pageCanvas);
+  const descCrop = cropFixedDescRegion(pageCanvas);
+
+  const contractorText = await ocrContractorFast(contractorCrop);
+  const rawDesc = await ocrCroppedSingleLineFast(descCrop);
+
+  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
+  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
+
+  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
+  const folder = pickFolderByFilename(newName);
+
+  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+  const set = seenByFolder.get(folder);
+  
+  const finalName = uniquify(newName, set);
+  const target = getZipTarget(zip, folder);
+  const buf = await file.arrayBuffer();
+
+  target.file(finalName, buf);
+  if (onStep) onStep(`Work Order → ${finalName}`);
+}
+// ===============================================================
+// MAIN PIPELINE (Fast, cached, portrait-scan aware)
+// ===============================================================
+
+async function processQueuedFilesFast() {
+
+  // Clone queue at start to avoid mutation during processing
+  let droppedFiles = Array.from(queuedFiles);
+
+  // ---------------------------------------------------------------
+  // 1) Flatten any ZIPs into PDFs (sorted, natural)
+  // ---------------------------------------------------------------
+  if (droppedFiles.length) {
+    const flattened = [];
+
+    for (const f of droppedFiles) {
+      const lower = (f.name || "").toLowerCase();
+
+      if (lower.endsWith(".zip")) {
+        try {
+          setProgress(0, 1, `Reading ZIP: ${f.name}…`);
+
+          const zipIn = await JSZip.loadAsync(f);
+          const pdfEntries = Object.values(zipIn.files)
+            .filter(ff => !ff.dir && ff.name.toLowerCase().endsWith(".pdf"))
+            .sort((a, b) => naturalSort(a.name, b.name));
+
+          const extracted = await Promise.all(
+            pdfEntries.map(async (entry) => {
+              const blob = await zipIn.file(entry.name).async("blob");
+              return new File([blob], entry.name, { type: "application/pdf" });
+            })
+          );
+
+          flattened.push(...extracted);
+
+        } catch (err) {
+          console.error(err);
+          alert(`ZIP could not be read: ${f.name}`);
+          finishProgress();
+          return;
+        }
+
+      } else {
+        flattened.push(f);
+      }
+    }
+
+    droppedFiles = flattened;
+  }
+
+  // ---------------------------------------------------------------
+  // 2) Filter to PDFs
+  // ---------------------------------------------------------------
+  const pdfFiles = droppedFiles.filter(f => f.name.toLowerCase().endsWith(".pdf"));
+  if (!pdfFiles.length) {
+    alert("No PDF files found.");
+    return;
+  }
+
+  // ---------------------------------------------------------------
+  // 3) FAST ADDRESS SCAN (non-OCR), then portrait fallback
+  // ---------------------------------------------------------------
+  ensureProgressUI();
+  setProgress(0, 100, "Scanning for address…");
+
+  let address = await fastFindAddress(pdfFiles);
+  let portraitPlan = null;
+  let startIdx = 0;
+
+  if (!address) {
+    setProgress(2, 100, "Checking portrait scanned pack…");
+    portraitPlan = await detectPortraitEmailPack(pdfFiles);
+
+    if (portraitPlan && portraitPlan.address) {
+      address = portraitPlan.address;
+      startIdx = portraitPlan.consumedCount;
     }
   }
 
-  return { pdfJsDoc, textByPage, p1Raw, p1Clean };
+  if (!address) {
+    alert("Could not extract address — please include an inspection checklist (text or scanned portrait).");
+    finishProgress();
+    return;
+  }
+
+  // ---------------------------------------------------------------
+  // 3b) FULL PROCESSING PLAN (after address known)
+  // ---------------------------------------------------------------
+  setProgress(10, 100, "Analysing files…");
+
+  const filePlans = [];
+  let estimatedSteps = 0;
+
+  if (portraitPlan) {
+    estimatedSteps += portraitPlan.items.length;
+  }
+
+  for (let i = startIdx; i < pdfFiles.length; i++) {
+    const f = pdfFiles[i];
+
+    const pdfJsDoc = await getPdfJsCached(f);
+    const pdfLibDoc = await getPdfLibCached(f);
+    const textByPage = await extractAllTextCached(pdfJsDoc, f);
+
+    const p1Raw = textByPage[1] || "";
+    const p1Clean = cleanPunc(p1Raw);
+    const isPack = isInspectionPackHeader(p1Clean);
+    const pages = pdfJsDoc.numPages;
+
+    filePlans.push({ file: f, isPack, pages, pdfJsDoc, pdfLibDoc, textByPage });
+    estimatedSteps += isPack ? pages : 1;
+  }
+
+  // ---------------------------------------------------------------
+  // 4) PROCESS ALL FILES INTO ONE ZIP
+  // ---------------------------------------------------------------
+  const outZip = new JSZip();
+  const seenByFolder = new Map();
+  let done = 0;
+
+  function onStep(msg) {
+    done++;
+    setProgress(done, estimatedSteps, msg || `Processed ${done}/${estimatedSteps}`);
+  }
+
+  // 4a) Portrait scanned pack (if used)
+  if (portraitPlan) {
+    await processPortraitPackToZip(portraitPlan, outZip, seenByFolder, onStep);
+  }
+
+  // 4b) Standard packs and work orders
+  for (const plan of filePlans) {
+    if (plan.isPack) {
+      await appendInspectionPackToZipFast(plan, outZip, address, seenByFolder, onStep);
+    } else {
+      await addWorkOrderToZipFast(plan, outZip, address, seenByFolder, onStep);
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // 5) Finalise ZIP + Download
+  // ---------------------------------------------------------------
+  setProgress(estimatedSteps, estimatedSteps, "Packaging ZIP…");
+
+  const outBlob = await outZip.generateAsync({
+    type: "blob",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 }
+  });
+
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(outBlob);
+  a.download = `${address}.zip`;
+  a.click();
+
+  finishProgress();
 }
 
-// Derive ADDRESS from header text (formatted for filename)
-function getPackAddressFromHeaderText(p1Raw) {
-  const extracted = extractAddressFromHeader(p1Raw);
-  return toFilenameAddressKeepCommas(extracted);
-}
 
 // ===============================================================
-// Mapping rules and folder routing (unchanged behaviour)
+// UI + QUEUE SYSTEM
 // ===============================================================
 
-function mapWorkOrderDescription(desc, contractorText) {
-  const hay = `${desc || ""} ${contractorText || ""}`.trim();
-
-  // Contractor-led (highest priority)
-  if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) return "ASBESTOS REMOVAL";
-  if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) || fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) return "ASBESTOS SURVEY";
-  if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) return "RODGERS ISOLATOR";
-  if (fuzzyIncludesPhrase(hay, "MTW AS PER VRR", 3)) return "AC GOLD MTW";
-
-  // Description-led
-  if (fuzzyIncludesPhrase(hay, "DEEP", 1))     return "PERFECT DEEP";
-  if (fuzzyIncludesPhrase(hay, "SPARKLE", 2))  return "PERFECT SPARKLE";
-
-  return null; // no mapping → use original
-}
-
-function pickFolderByFilename(finalName) {
-  const n = (finalName || "").toUpperCase();
-
-  if (n.includes("ASBESTOS")) return "Asbestos";
-  if (n.includes("INSPECTION CHECKLIST")) return "Inspection Checklist";
-
-  if (n.includes("CLEAN") || n.includes("PERFECT DEEP") || n.includes("PERFECT SPARKLE"))
-    return "Cleans + Clearouts";
-
-  if (n.includes("EICR")) return "Periodic - Rewires";
-  if (n.includes("EPC")) return "EPC";
-  if (n.includes("ROT WORKS")) return "Rot Works";
-  if (n.includes("RECHARGE")) return "Rechargeable Repairs";
-  if (n.includes("AC GOLD MTW")) return "MTW";
-  if (n.includes("MTW AS PER VRR")) return "MTW";
-  if (n.includes("BMD WORKS")) return "NEC Lines";
-  if (n.includes("RODGERS ISOLATOR")) return "Power";
-
-  return ""; // default → ZIP root
-}
-// ===============================================================
-// UI: Minimal progress overlay (unchanged behaviour, tiny tweaks)
-// ===============================================================
-function ensureProgressUI() {
-  if (document.getElementById("autoProgressWrap")) return;
-
-  const wrap = document.createElement("div");
-  wrap.id = "autoProgressWrap";
-  wrap.style.cssText = `
-    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,.45); z-index: 999999; font-family: system-ui,Segoe UI,Arial,sans-serif;
-  `;
-  wrap.innerHTML = `
-    <div style="width: min(560px,90vw); background:#fff; border-radius:10px; padding:20px 22px; box-shadow: 0 10px 30px rgba(0,0,0,.3)">
-      <div style="font-weight:600; margin-bottom:10px; font-size:18px">Processing…</div>
-      <div id="autoStatus" style="font-size:13px;color:#333;margin-bottom:12px">Starting…</div>
-      <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden">
-        <div id="autoBar" style="height:100%;width:0%;background:#0078d4;transition:width .2s ease"></div>
-      </div>
-      <div id="autoPct" style="margin-top:8px;font-size:12px;color:#666">0%</div>
-    </div>
-  `;
-  document.body.appendChild(wrap);
-}
-function setProgress(current, total, msg) {
-  ensureProgressUI();
-  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
-  const bar = document.getElementById("autoBar");
-  const pctLbl = document.getElementById("autoPct");
-  const st = document.getElementById("autoStatus");
-  if (bar) bar.style.width = pct + "%";
-  if (pctLbl) pctLbl.textContent = `${pct}%`;
-  if (st && msg) st.textContent = msg;
-}
-function finishProgress() {
-  setProgress(1, 1, "Done");
-  setTimeout(() => {
-    const wrap = document.getElementById("autoProgressWrap");
-    if (wrap) wrap.remove();
-  }, 600);
-}
-
-// ===============================================================
-// DOM references and queue state
-// ===============================================================
-const dropzone   = document.querySelector("#dropzone");
+const dropzone = document.querySelector("#dropzone");
 const processBtn = document.getElementById("processBtn");
-const clearBtn   = document.getElementById("clearBtn");
-const queueList  = document.getElementById("queueList");
+const clearBtn = document.getElementById("clearBtn");
+const queueList = document.getElementById("queueList");
 
-// Keep a stable queue: Array<File>
 let queuedFiles = [];
 
 // Render queue
@@ -579,9 +874,9 @@ function renderQueue() {
         <button class="rm-btn" data-remove="${idx}">Remove</button>
       </div>`;
   }).join("");
+
   queueList.innerHTML = items;
 
-  // Hook remove
   queueList.querySelectorAll("button[data-remove]").forEach(btn => {
     btn.addEventListener("click", () => {
       const idx = parseInt(btn.getAttribute("data-remove"), 10);
@@ -593,11 +888,12 @@ function renderQueue() {
   });
 }
 
-// Add files (dedupe by name+size+type)
-function addToQueue(fileListOrArray) {
-  const incoming = Array.from(fileListOrArray || []);
+// Add files
+function addToQueue(list) {
+  const incoming = Array.from(list || []);
   const sig = f => `${f.name}::${f.size}::${f.type}`;
   const existing = new Set(queuedFiles.map(sig));
+
   for (const f of incoming) {
     const lower = (f.name || "").toLowerCase();
     if (!(lower.endsWith(".pdf") || lower.endsWith(".zip"))) continue;
@@ -609,15 +905,14 @@ function addToQueue(fileListOrArray) {
   }
   renderQueue();
 }
-// Initial render
+
 renderQueue();
 
-// ===============================================================
-// Drag & Drop → queue only
-// ===============================================================
+// DRAG & DROP
 ["dragover", "drop"].forEach(evt => {
   document.addEventListener(evt, e => e.preventDefault());
 });
+
 dropzone.addEventListener("dragover", e => {
   e.preventDefault();
   dropzone.classList.add("dragging");
@@ -633,13 +928,13 @@ dropzone.addEventListener("drop", e => {
   addToQueue(dropped);
 });
 
-// Clear queue
+// CLEAR QUEUE
 clearBtn.addEventListener("click", () => {
   queuedFiles = [];
   renderQueue();
 });
 
-// Run
+// RUN
 processBtn.addEventListener("click", async () => {
   if (!queuedFiles.length) {
     alert("Queue is empty. Drop PDF(s) or ZIP(s) first.");
@@ -653,305 +948,3 @@ processBtn.addEventListener("click", async () => {
     finishProgress();
   }
 });
-
-// ===============================================================
-// ZIP helpers
-// ===============================================================
-function getZipTarget(zip, folder) {
-  return folder ? zip.folder(folder) : zip;
-}
-
-// Save a single page into ZIP using an existing PDFLib doc
-async function saveSinglePageFromDoc(pdfLibDoc, pageIndex1, filename, zip, seenByFolder, onStep) {
-  const dest = await PDFLib.PDFDocument.create();
-  const [copied] = await dest.copyPages(pdfLibDoc, [pageIndex1 - 1]);
-  dest.addPage(copied);
-  const bytes = await dest.save();
-
-  const folder = pickFolderByFilename(filename);
-  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(filename, set);
-
-  const target = getZipTarget(zip, folder);
-  target.file(finalName, bytes);
-
-  if (onStep) onStep(`Saved → ${finalName}`);
-}
-
-// Save multiple specific pages into ZIP as one file
-async function savePageSetFromDoc(pdfLibDoc, zeroBasedIndices, filename, zip, seenByFolder, onStep) {
-  const dest = await PDFLib.PDFDocument.create();
-  const copied = await dest.copyPages(pdfLibDoc, zeroBasedIndices);
-  copied.forEach(pg => dest.addPage(pg));
-  const outBytes = await dest.save();
-
-  const folder = pickFolderByFilename(filename);
-  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(filename, set);
-
-  const target = getZipTarget(zip, folder);
-  target.file(finalName, outBytes);
-
-  if (onStep) onStep(`Split → ${finalName}`);
-}
-
-// ===============================================================
-// Work Order → add to ZIP (Optimised, cached)
-// ===============================================================
-async function addWorkOrderToZipFast(plan, zip, address, seenByFolder, onStep) {
-  const { file, pdfJsDoc, pdfLibDoc, textByPage } = plan;
-
-  // 1) Try mixed work-order split using pre-extracted text
-  let usedSplit = false;
-  try {
-    const groups = await detectMixedWorkOrdersCached(pdfJsDoc, textByPage);
-    const types = Object.keys(groups);
-
-    if (types.length > 1) {
-      for (const type of types) {
-        const pages = groups[type];
-        const zeroIdx = pages.map(p => p - 1);
-        const filename = `${address} - VOID ${type} WORK ORDER REQUEST.pdf`;
-        await savePageSetFromDoc(pdfLibDoc, zeroIdx, filename, zip, seenByFolder, onStep);
-      }
-      usedSplit = true;
-    }
-  } catch (err) {
-    console.warn("Mixed work order detection failed:", err);
-  }
-  if (usedSplit) return;
-
-  // 2) Standard single work order → OCR description + contractor (fast)
-  const pageCanvas = await renderPdfPageToCanvasCached(file, 1, 1.35);
-  const contractorCrop = cropFixedContractorRegion(pageCanvas);
-  const descCrop = cropFixedDescRegion(pageCanvas);
-
-  const contractorText = await ocrContractorFast(contractorCrop);
-  const rawDesc = await ocrCroppedSingleLineFast(descCrop);
-
-  const mapped = mapWorkOrderDescription(rawDesc, contractorText);
-  const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
-
-  const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
-  const folder = pickFolderByFilename(newName);
-
-  if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
-  const set = seenByFolder.get(folder);
-  const finalName = uniquify(newName, set);
-
-  const target = getZipTarget(zip, folder);
-  const buf = await file.arrayBuffer();
-  target.file(finalName, buf);
-
-  if (onStep) onStep(`Work Order → ${finalName}`);
-}
-async function tryReadPage1RawTextOnly(file) {
-  try {
-    const pdfJsDoc = await getPdfJsCached(file);
-    const page = await pdfJsDoc.getPage(1);
-    // Slightly faster options (skip normalization overhead)
-    const tc = await page.getTextContent({ normalizeWhitespace: false, disableNormalization: true });
-    const raw = (tc.items || []).map(i => i.str || "").join(" ");
-    return raw; // return RAW, do NOT clean here
-  } catch {
-    return "";
-  }
-}
-
-async function fastFindAddress(pdfFiles) {
-  for (const f of pdfFiles) {
-    const raw = await tryReadPage1RawTextOnly(f);
-    const clean = cleanPunc(raw);
-
-    if (isInspectionPackHeader(clean)) {
-      // IMPORTANT: pass RAW (with commas etc.) to address function
-      return getPackAddressFromHeaderText(raw);
-    }
-  }
-  return "";
-}
-// ===============================================================
-// Inspection Pack Splitter → append parts into ZIP (Optimised)
-// ===============================================================
-async function appendInspectionPackToZipFast(plan, zip, address, seenByFolder, onStep) {
-  const { pdfJsDoc, pdfLibDoc, textByPage } = plan;
-  const total = pdfJsDoc.numPages;
-
-  // Helper to save a single page with filename
-  async function saveSingle(pageIndex1, filename) {
-    await saveSinglePageFromDoc(pdfLibDoc, pageIndex1, filename, zip, seenByFolder, onStep);
-  }
-
-  // Page-1 cleaned for detection
-  const p1Clean = cleanPunc(textByPage[1] || "");
-
-  const isAcGold =
-    p1Clean.toUpperCase().includes("MULTI TRADE WORKS") ||
-    p1Clean.toUpperCase().includes("MULTI-TRADE WORKS");
-
-  // Save Page 1 as Inspection Checklist
-  await saveSingle(1, `${address} - VOID INSPECTION CHECKLIST.pdf`);
-
-  if (isAcGold) {
-    // AC GOLD MTW FLOW
-    let lastText = "";
-    if (total >= 2) {
-      lastText = cleanPunc(textByPage[total] || "");
-    }
-    const lastIsBmd = lastText.toUpperCase().includes("BMD WORKS REQUIRED");
-    const mtwEnd = lastIsBmd ? total - 1 : total;
-
-    let mtwIdx = 0;
-    for (let p = 2; p <= mtwEnd; p++) {
-      const txt = cleanPunc(textByPage[p] || "");
-      if (looksBlankText(txt)) continue;
-      mtwIdx++;
-      await saveSingle(p, `${address} - VOID AC GOLD MTW (${mtwIdx}).pdf`);
-    }
-
-    if (lastIsBmd) {
-      await saveSingle(total, `${address} - VOID BMD WORKS.pdf`);
-    }
-  } else {
-    // INTERNAL VOID PACK FLOW
-    let startBmdFrom = 2;
-    let bmdIdx = 0;
-
-    if (total >= 2) {
-      const p2Text = cleanPunc(textByPage[2] || "");
-      const p2Blank = looksBlankText(p2Text);
-      const p2Recharge = p2Text.toUpperCase().includes("RECHARGE WORK") || p2Text.toUpperCase().includes("RECHARGEABLE WORK");
-
-      if (!p2Blank && p2Recharge) {
-        await saveSingle(2, `${address} - VOID_RECHARGEABLE_Works.pdf`);
-        startBmdFrom = 3;
-      } else if (p2Blank) {
-        startBmdFrom = 3;
-      } else {
-        startBmdFrom = 2;
-      }
-    }
-
-    for (let p = startBmdFrom; p <= total; p++) {
-      const txt = cleanPunc(textByPage[p] || "");
-      if (looksBlankText(txt)) continue;
-      bmdIdx++;
-      await saveSingle(p, `${address} - VOID BMD WORKS (${bmdIdx}).pdf`);
-    }
-  }
-}
-
-// ===============================================================
-// MAIN PIPELINE (Fast, cached, no workers)
-// ===============================================================
-// ===============================================================
-// MAIN PIPELINE (Fast, cached, no workers)
-// ===============================================================
-async function processQueuedFilesFast() {
-  // Clone queue at start to avoid mutation during process
-  let droppedFiles = Array.from(queuedFiles);
-
-  // 1) Flatten any ZIPs into PDFs (sorted, natural)
-  if (droppedFiles.length) {
-    const flattened = [];
-    for (const f of droppedFiles) {
-      const lower = (f.name || "").toLowerCase();
-      if (lower.endsWith(".zip")) {
-        try {
-          setProgress(0, 1, `Reading ZIP: ${f.name}…`);
-          const zipIn = await JSZip.loadAsync(f);
-          const pdfEntries = Object.values(zipIn.files)
-            .filter(ff => !ff.dir && ff.name.toLowerCase().endsWith(".pdf"))
-            .sort((a, b) => naturalSort(a.name, b.name));
-
-          for (const entry of pdfEntries) {
-            const blob = await zipIn.file(entry.name).async("blob");
-            flattened.push(new File([blob], entry.name, { type: "application/pdf" }));
-          }
-        } catch (err) {
-          console.error(err);
-          alert(`ZIP could not be read: ${f.name}`);
-          finishProgress();
-          return;
-        }
-      } else {
-        flattened.push(f);
-      }
-    }
-    droppedFiles = flattened;
-  }
-
-  // 2) Filter to PDFs
-  const pdfFiles = droppedFiles.filter(f => f.name.toLowerCase().endsWith(".pdf"));
-  if (!pdfFiles.length) {
-    alert("No PDF files found.");
-    return;
-  }
-
-  // 3) FAST SCAN: Only read page 1 (no OCR, no full text) to find address
-  ensureProgressUI();
-  setProgress(0, 100, "Scanning for address…");
-
-  const address = await fastFindAddress(pdfFiles);
-
-  if (!address) {
-    alert("Could not extract address — please include an inspection pack.");
-    finishProgress();
-    return;
-  }
-
-  // 3b) Now that we know the address, do full processing
-  setProgress(10, 100, "Analysing files…");
-
-  const filePlans = [];
-  let estimatedSteps = 0;
-
-  for (const f of pdfFiles) {
-    const pdfJsDoc = await getPdfJsCached(f);
-    const pdfLibDoc = await getPdfLibCached(f);
-    const textByPage = await extractAllTextCached(pdfJsDoc, f);
-
-    const p1Raw = textByPage[1] || "";
-    const p1Clean = cleanPunc(p1Raw);
-    const isPack = isInspectionPackHeader(p1Clean);
-    const pages = pdfJsDoc.numPages;
-
-    filePlans.push({ file: f, isPack, pages, pdfJsDoc, pdfLibDoc, textByPage });
-    estimatedSteps += isPack ? pages : 1;
-  }
-
-  // 4) Process all files into one ZIP
-  const outZip = new JSZip();
-  const seenByFolder = new Map();
-  let done = 0;
-
-  function onStep(msg) {
-    done++;
-    setProgress(done, estimatedSteps, msg || `Processed ${done}/${estimatedSteps}`);
-  }
-
-  for (const plan of filePlans) {
-    if (plan.isPack) {
-      await appendInspectionPackToZipFast(plan, outZip, address, seenByFolder, onStep);
-    } else {
-      await addWorkOrderToZipFast(plan, outZip, address, seenByFolder, onStep);
-    }
-  }
-
-  // 5) Finalize ZIP + Download (balanced compression vs. speed)
-  setProgress(estimatedSteps, estimatedSteps, "Packaging ZIP…");
-  const outBlob = await outZip.generateAsync({
-    type: "blob",
-    compression: "DEFLATE",
-    compressionOptions: { level: 6 } // good trade-off
-  });
-
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(outBlob);
-  a.download = `${address}.zip`;
-  a.click();
-
-  finishProgress();
-}
