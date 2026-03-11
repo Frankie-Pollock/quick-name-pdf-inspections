@@ -821,17 +821,39 @@ async function processQueuedFiles() {
     const doc = await getPdfJsDoc(bytes);
 
     // Page-1 text (both raw and cleaned)
-    const p1Raw   = await extractPageTextRaw(doc, 1);
-    const p1Clean = cleanPunc(p1Raw);
+// Page-1 text (both raw and cleaned) with OCR fallback for scanned packs
+let p1RawHighlight = await extractPageTextRaw(doc, 1);
+let p1Clean        = cleanPunc(p1RawHighlight);
+let p1Raw          = p1RawHighlight;
 
-    const isPack = isInspectionPackHeader(p1Clean);
-    const pages = doc.numPages;
-
-    if (isPack && !address) {
-      // Extract address from raw page text → then format to filename (uppercase, commas kept, no postcode)
-      const extracted = extractAddressFromHeader(p1Raw);
-      address = toFilenameAddressKeepCommas(extracted);
+// If text is blank or too short, try OCR on page 1
+if (looksBlankText(p1Clean)) {
+  try {
+    // Use the original file `f` to render page 1 for OCR
+    const pageCanvas = await renderPdfPageToCanvas(f, 1, 2.0);
+    const enhanced   = enhanceForOcr(pageCanvas);
+    const ocrRes     = await Tesseract.recognize(enhanced, "eng", {
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
+      tessedit_pageseg_mode: 6
+    });
+    const ocrText = (ocrRes?.data?.text || "").replace(/\s+/g, " ").trim();
+    if (ocrText && ocrText.length > 5) {
+      p1Raw   = ocrText;           // keep punctuation for address
+      p1Clean = cleanPunc(ocrText); // cleaned for header detection
     }
+  } catch (e) {
+    console.warn("OCR fallback for pack header failed:", e);
+  }
+}
+
+const isPack = isInspectionPackHeader(p1Clean);
+const pages  = doc.numPages;
+
+if (isPack && !address) {
+  // Extract address from raw page text (raw keeps commas/postcode patterns)
+  const extracted = extractAddressFromHeader(p1Raw);
+  address = toFilenameAddressKeepCommas(extracted);
+}
 
     filePlans.push({ file: f, isPack, pages });
     estimatedSteps += isPack ? pages : 1; // rough estimate
