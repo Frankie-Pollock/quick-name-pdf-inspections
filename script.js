@@ -429,6 +429,30 @@ async function addWorkOrderToZip(zip, pdfBlobOrFile, address, seenByFolder, onSt
   const mapped = mapWorkOrderDescription(rawDesc, contractorText);
   const finalDesc = cleanPunc(mapped || rawDesc || "WORK ORDER");
 
+async function detectDeepSparkleSections(pdfJsDoc) {
+  const total = pdfJsDoc.numPages;
+
+  // Pages where Deep text is found
+  const deepPages = [];
+  // Pages where Sparkle text is found
+  const sparklePages = [];
+
+  for (let p = 1; p <= total; p++) {
+    const txt = await extractPageText(pdfJsDoc, p); // uses your existing highlightable text extractor
+
+    const clean = toUpper(txt);
+
+    if (clean.includes("DEEP CLEAN") || clean.includes("PERFECT DEEP")) {
+      deepPages.push(p);
+    }
+    if (clean.includes("SPARKLE") || clean.includes("PERFECT SPARKLE")) {
+      sparklePages.push(p);
+    }
+  }
+
+  return { deepPages, sparklePages };
+}
+  
   // 2) Build target filename (same pattern previously)
   const newName = `${address} - VOID ${finalDesc} WORK ORDER REQUEST.pdf`;
   const folder = pickFolderByFilename(newName);
@@ -456,6 +480,54 @@ async function appendInspectionPackToZip(zip, bigPdfBlob, address, seenByFolder,
   const bytesForPdfLib = originalBytes.slice(0);
 
   const pdfJsDoc = await getPdfJsDoc(bytesForPdfJs);
+  // --- Detect combined Deep + Sparkle PDFs ---
+const { deepPages, sparklePages } = await detectDeepSparkleSections(pdfJsDoc);
+
+const isCombinedClean = deepPages.length && sparklePages.length;
+
+if (isCombinedClean) {
+
+  // Load full PDF with pdf-lib (uses your existing method)
+  const srcDoc = await PDFLib.PDFDocument.load(bytes);
+
+  // Function to save a range to zip
+  async function saveRangeToZip(pages, filename) {
+    const dest = await PDFLib.PDFDocument.create();
+    const zeroIndexes = pages.map(p => p - 1);
+    const copied = await dest.copyPages(srcDoc, zeroIndexes);
+    copied.forEach(pg => dest.addPage(pg));
+    const outBytes = await dest.save();
+
+    const folder = pickFolderByFilename(filename);
+    if (!seenByFolder.has(folder)) seenByFolder.set(folder, new Set());
+    const set = seenByFolder.get(folder);
+    const finalName = uniquify(filename, set);
+
+    const target = folder ? zip.folder(folder) : zip;
+    target.file(finalName, outBytes);
+
+    if (onStep) onStep(`Split → ${finalName}`);
+  }
+
+  // Deep section
+  if (deepPages.length) {
+    await saveRangeToZip(
+      deepPages,
+      `${address} - VOID PERFECT DEEP WORK ORDER REQUEST.pdf`
+    );
+  }
+
+  // Sparkle section
+  if (sparklePages.length) {
+    await saveRangeToZip(
+      sparklePages,
+      `${address} - VOID PERFECT SPARKLE WORK ORDER REQUEST.pdf`
+    );
+  }
+
+  // Skip the original work order logic since we already produced final files
+  return;
+}
   const srcDoc   = await PDFLib.PDFDocument.load(bytesForPdfLib);
 
   const total = pdfJsDoc.numPages;
