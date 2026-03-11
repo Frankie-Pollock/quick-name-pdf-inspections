@@ -747,7 +747,31 @@ async function addWorkOrderToZipFast(plan, zip, address, seenByFolder, onStep) {
 
   if (onStep) onStep(`Work Order → ${finalName}`);
 }
+async function tryReadPage1RawTextOnly(file) {
+  try {
+    const pdfJsDoc = await getPdfJsCached(file);
+    const page = await pdfJsDoc.getPage(1);
+    // Slightly faster options (skip normalization overhead)
+    const tc = await page.getTextContent({ normalizeWhitespace: false, disableNormalization: true });
+    const raw = (tc.items || []).map(i => i.str || "").join(" ");
+    return raw; // return RAW, do NOT clean here
+  } catch {
+    return "";
+  }
+}
 
+async function fastFindAddress(pdfFiles) {
+  for (const f of pdfFiles) {
+    const raw = await tryReadPage1RawTextOnly(f);
+    const clean = cleanPunc(raw);
+
+    if (isInspectionPackHeader(clean)) {
+      // IMPORTANT: pass RAW (with commas etc.) to address function
+      return getPackAddressFromHeaderText(raw);
+    }
+  }
+  return "";
+}
 // ===============================================================
 // Inspection Pack Splitter → append parts into ZIP (Optimised)
 // ===============================================================
@@ -822,6 +846,9 @@ async function appendInspectionPackToZipFast(plan, zip, address, seenByFolder, o
 // ===============================================================
 // MAIN PIPELINE (Fast, cached, no workers)
 // ===============================================================
+// ===============================================================
+// MAIN PIPELINE (Fast, cached, no workers)
+// ===============================================================
 async function processQueuedFilesFast() {
   // Clone queue at start to avoid mutation during process
   let droppedFiles = Array.from(queuedFiles);
@@ -863,56 +890,36 @@ async function processQueuedFilesFast() {
     return;
   }
 
-  // 3) Build plan + discover address by scanning for first inspection pack header
+  // 3) FAST SCAN: Only read page 1 (no OCR, no full text) to find address
   ensureProgressUI();
-  setProgress(0, 100, "Analysing files…");
+  setProgress(0, 100, "Scanning for address…");
+
+  const address = await fastFindAddress(pdfFiles);
+
+  if (!address) {
+    alert("Could not extract address — please include an inspection pack.");
+    finishProgress();
+    return;
+  }
+
+  // 3b) Now that we know the address, do full processing
+  setProgress(10, 100, "Analysing files…");
 
   const filePlans = [];
   let estimatedSteps = 0;
-  let address = "";
 
   for (const f of pdfFiles) {
     const pdfJsDoc = await getPdfJsCached(f);
     const pdfLibDoc = await getPdfLibCached(f);
     const textByPage = await extractAllTextCached(pdfJsDoc, f);
 
-    // Header texts (with OCR fallback only if needed)
-    let p1Raw = textByPage[1] || "";
-    let p1Clean = cleanPunc(p1Raw);
-
-    if (looksBlankText(p1Clean)) {
-      try {
-        const pageCanvas = await renderPdfPageToCanvasCached(f, 1, 1.35);
-        const enhanced = enhanceForOcr(pageCanvas);
-        const ocrRes = await Tesseract.recognize(enhanced, "eng", {
-          tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /-&",
-          tessedit_pageseg_mode: 6
-        });
-        const ocrText = (ocrRes?.data?.text || "").replace(/\s+/g, " ").trim();
-        if (ocrText && ocrText.length > 5) {
-          p1Raw   = ocrText;
-          p1Clean = cleanPunc(ocrText);
-        }
-      } catch (e) {
-        console.warn("OCR fallback for pack header failed:", e);
-      }
-    }
-
+    const p1Raw = textByPage[1] || "";
+    const p1Clean = cleanPunc(p1Raw);
     const isPack = isInspectionPackHeader(p1Clean);
-    const pages  = pdfJsDoc.numPages;
-
-    if (isPack && !address) {
-      address = getPackAddressFromHeaderText(p1Raw);
-    }
+    const pages = pdfJsDoc.numPages;
 
     filePlans.push({ file: f, isPack, pages, pdfJsDoc, pdfLibDoc, textByPage });
-    estimatedSteps += isPack ? pages : 1; // rough estimate for progress
-  }
-
-  if (!address) {
-    alert("Could not auto-detect address from an Inspection Checklist header. Please include an inspection pack in the drop.");
-    finishProgress();
-    return;
+    estimatedSteps += isPack ? pages : 1;
   }
 
   // 4) Process all files into one ZIP
