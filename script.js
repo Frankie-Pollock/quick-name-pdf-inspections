@@ -506,6 +506,8 @@ function pickFolderByFilename(finalName) {
   if (n.includes("MTW AS PER VRR")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
   if (n.includes("RODGERS ISOLATOR")) return "Power";
+  if (n.includes("BATHROOM INSTALLATION")) return "Kitchens - Bathrooms";
+
 
   return ""; // default → ZIP root
 }
