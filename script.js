@@ -481,7 +481,7 @@ function mapWorkOrderDescription(desc, contractorText) {
   if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) || fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) return "ASBESTOS SURVEY";
   if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) return "RODGERS ISOLATOR";
   if (fuzzyIncludesPhrase(hay, "MTW AS PER VRR", 3)) return "AC GOLD MTW";
-
+  if (fuzzyIncludesPhrase(hay, "RECHARGABLE MTW", 3)) return "ACG RECHARGABLE MTW";
   // Description-led
   if (fuzzyIncludesPhrase(hay, "DEEP", 1))     return "PERFECT DEEP";
   if (fuzzyIncludesPhrase(hay, "SPARKLE", 2))  return "PERFECT SPARKLE";
@@ -504,6 +504,7 @@ function pickFolderByFilename(finalName) {
   if (n.includes("RECHARGE")) return "Rechargeable Repairs";
   if (n.includes("AC GOLD MTW")) return "MTW";
   if (n.includes("MTW AS PER VRR")) return "MTW";
+  if (n.includes("ACG RECHARGABLE MTW")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
   if (n.includes("RODGERS ISOLATOR")) return "Power";
   if (n.includes("BATHROOM INSTALLATION")) return "Kitchens - Bathrooms";
