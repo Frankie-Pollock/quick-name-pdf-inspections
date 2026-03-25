@@ -376,6 +376,14 @@ function extractAddressFromHeader(text) {
     }
   }
 
+    // AC GOLD MTW "… WORKS: <ADDRESS ... POSTCODE>"
+  if (!working) {
+    const idxWorks = header.toUpperCase().indexOf("ORDER for:");
+    if (idxWorks !== -1) {
+      working = header.slice(idxWorks + "ORDER for:".length).trim();
+    }
+  }
+
   if (!working) return "";
 
   // Trim at postcode if present
