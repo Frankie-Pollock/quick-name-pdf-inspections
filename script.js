@@ -358,29 +358,40 @@ function extractAddressFromHeader(text) {
   if (!text) return "";
 
   const header = String(text).replace(/\s+/g, " ").trim();
+  const upper = header.toUpperCase();
   const postcodeRegex = /[A-Z]{1,2}[0-9][A-Z0-9]?\s*[0-9][A-Z]{2}/i;
 
   let working = "";
 
-  // Internal Void Pack "... PACK FOR <ADDRESS ... POSTCODE> (...)"
-  const idxFor = header.toUpperCase().indexOf("PACK FOR");
+  // Internal Void Pack "... PACK FOR <ADDRESS>"
+  const idxFor = upper.indexOf("PACK FOR");
   if (idxFor !== -1) {
     working = header.slice(idxFor + "PACK FOR".length).trim();
   }
 
-  // AC GOLD MTW "… WORKS: <ADDRESS ... POSTCODE>"
+  // AC GOLD (old) "... WORKS: <ADDRESS>"
   if (!working) {
-    const idxWorks = header.toUpperCase().indexOf("WORKS:");
+    const idxWorks = upper.indexOf("WORKS:");
     if (idxWorks !== -1) {
       working = header.slice(idxWorks + "WORKS:".length).trim();
     }
   }
 
-    // AC GOLD MTW "… WORKS: <ADDRESS ... POSTCODE>"
+  // AC GOLD (new) "... ORDER for <ADDRESS> (<job no>)"
   if (!working) {
-    const idxWorks = header.toUpperCase().indexOf("ORDER for:");
-    if (idxWorks !== -1) {
-      working = header.slice(idxWorks + "ORDER for:".length).trim();
+    const marker = "ORDER FOR ";
+    const idxOrderFor = upper.indexOf(marker);
+
+    if (idxOrderFor !== -1) {
+      const start = idxOrderFor + marker.length;
+
+      // Stop before first "(" — job number starts here
+      const idxParen = header.indexOf("(", start);
+      if (idxParen !== -1) {
+        working = header.slice(start, idxParen).trim();
+      } else {
+        working = header.slice(start).trim();
+      }
     }
   }
 
