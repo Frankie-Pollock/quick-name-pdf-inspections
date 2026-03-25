@@ -422,8 +422,10 @@ function classifyPageType(upperText) {
   if (upperText.includes("ASBESTOS"))        return "ASBESTOS REMOVAL";
 
   if (upperText.includes("RODGERS")) return "RODGERS ISOLATOR";
-  if (upperText.includes("MTW"))     return "AC GOLD MTW";
+  if (upperText.includes("ALTRO FLOORING")) return "ALTRO FLOORING";
+  
   if (upperText.includes("RECHARGE")) return "RECHARGEABLE REPAIRS";
+  if (upperText.includes("MTW"))     return "AC GOLD MTW";
   if (upperText.includes("BMD"))      return "BMD WORKS";
 
   return null;
@@ -500,6 +502,8 @@ function mapWorkOrderDescription(desc, contractorText) {
   if (fuzzyIncludesPhrase(hay, "ASPECT CONTRACT", 3)) return "ASBESTOS REMOVAL";
   if (fuzzyIncludesPhrase(hay, "LIFE ENVIRONMENTAL", 3) || fuzzyIncludesPhrase(hay, "LIFE ENVIROMENTAL", 4)) return "ASBESTOS SURVEY";
   if (fuzzyIncludesPhrase(hay, "RODGERS ELECTRICAL", 3)) return "RODGERS ISOLATOR";
+  if (fuzzyIncludesPhrase(hay, "ALTRO FLOORING", 3)) return "ALTRO FLOORING";
+
   if (fuzzyIncludesPhrase(hay, "MTW AS PER VRR", 3)) return "AC GOLD MTW";
   if (fuzzyIncludesPhrase(hay, "RECHARGABLE MTW", 3)) return "ACG RECHARGABLE MTW";
   // Description-led
@@ -527,6 +531,7 @@ function pickFolderByFilename(finalName) {
   if (n.includes("ACG RECHARGABLE MTW")) return "MTW";
   if (n.includes("BMD WORKS")) return "NEC Lines";
   if (n.includes("RODGERS ISOLATOR")) return "Power";
+  if (n.includes("ALTRO FLOORING")) return "Purchase Orders MISC";
   if (n.includes("BATHROOM INSTALLATION")) return "Kitchens - Bathrooms";
 
 
