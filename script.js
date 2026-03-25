@@ -348,6 +348,7 @@ function isInspectionPackHeader(cleanedText) {
   return (
     t.includes("INSPECTION CHECKLIST") ||
     t.includes("INTERNAL VOID PACK") ||
+    t.includes("MTW WORK ORDER") ||
     t.includes("MULTI TRADE WORKS") ||   // cleaned (no hyphen)
     t.includes("MULTI-TRADE WORKS")     // as printed (safe)
   );
