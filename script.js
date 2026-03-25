@@ -817,7 +817,7 @@ async function appendInspectionPackToZipFast(plan, zip, address, seenByFolder, o
 
   const isAcGold =
     p1Clean.toUpperCase().includes("MULTI TRADE WORKS") ||
-    p1Clean.toUpperCase().includes("MTW WORK ORDER for") ||
+    p1Clean.toUpperCase().includes("MTW WORK ORDER FOR") ||
     p1Clean.toUpperCase().includes("MULTI-TRADE WORKS");
 
   // Save Page 1 as Inspection Checklist
