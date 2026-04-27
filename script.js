@@ -205,12 +205,6 @@ function enhanceForOcr(srcCanvas) {
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
-
-  // Remove coloured backgrounds (esp. yellow)
-if (r > 200 && g > 200 && b < 200) {
-  // yellow-ish pixel → force white
-  data[i] = data[i+1] = data[i+2] = 255;
-}
   
   const hist = new Array(256).fill(0);
   for (let i = 0; i < data.length; i += 4) {
