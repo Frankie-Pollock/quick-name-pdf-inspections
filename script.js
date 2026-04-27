@@ -206,6 +206,12 @@ function enhanceForOcr(srcCanvas) {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
 
+  // Remove coloured backgrounds (esp. yellow)
+if (r > 200 && g > 200 && b < 200) {
+  // yellow-ish pixel → force white
+  data[i] = data[i+1] = data[i+2] = 255;
+}
+  
   const hist = new Array(256).fill(0);
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
@@ -365,10 +371,19 @@ function extractAddressFromHeader(text) {
   let working = "";
 
   // Internal Void Pack "... PACK FOR <ADDRESS>"
-  const idxFor = upper.indexOf("PACK FOR");
-  if (idxFor !== -1) {
-    working = header.slice(idxFor + "PACK FOR".length).trim();
+
+// Internal Void Pack "... PACK FOR <ADDRESS>"
+const idxFor = upper.indexOf("PACK FOR");
+if (idxFor !== -1) {
+  const start = idxFor + "PACK FOR".length;
+  working = header.slice(start).trim();
+
+  // 1) HARD STOP at job number "(123456789)"
+  const idxParen = working.indexOf("(");
+  if (idxParen !== -1) {
+    working = working.slice(0, idxParen).trim();
   }
+}
 
   // AC GOLD (old) "... WORKS: <ADDRESS>"
   if (!working) {
